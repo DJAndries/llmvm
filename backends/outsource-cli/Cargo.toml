@@ -1,0 +1,12 @@
+[package]
+name = "llmvm-outsource-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.1", features = ["derive"] }
+llmvm-backend-util= { path = "../util" }
+llmvm-outsource = { path = "../outsource" }
+llmvm-proto = { path = "../../proto" }
+serde_json = "1.0"
+tokio = { version = "1.26", features = ["rt", "macros", "net"] }

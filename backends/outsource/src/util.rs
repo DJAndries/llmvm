@@ -1,10 +1,11 @@
-use reqwest::Url;
+use reqwest::{Response, Url};
 use std::env;
 
 use crate::{OutsourceError, Result};
 
 pub fn get_host_and_api_key(
     api_key_env_key: &str,
+    api_key_from_cli: Option<String>,
     api_host_env_key: &str,
     default_api_host: &str,
 ) -> Result<(Url, String)> {
@@ -14,6 +15,17 @@ pub fn get_host_and_api_key(
             .as_str(),
     )
     .map_err(|_| OutsourceError::HostURLParse)?;
-    let api_key = env::var(api_key_env_key).map_err(|_| OutsourceError::APIKeyNotDefined)?;
+    let api_key = api_key_from_cli
+        .or(env::var(api_key_env_key).ok())
+        .ok_or(OutsourceError::APIKeyNotDefined)?;
     Ok((host, api_key))
+}
+
+pub async fn check_status_code(response: Response) -> Result<Response> {
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await?;
+        return Err(OutsourceError::BadHttpStatusCode { status, body });
+    }
+    Ok(response)
 }

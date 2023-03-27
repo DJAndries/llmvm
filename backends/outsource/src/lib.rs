@@ -1,8 +1,9 @@
-// mod huggingface;
+mod huggingface;
 mod openai;
 mod util;
 
 use llmvm_proto::{BackendGenerationRequest, BackendGenerationResponse};
+use reqwest::StatusCode;
 use strum_macros::{Display, EnumString};
 use thiserror::Error;
 
@@ -16,8 +17,10 @@ pub enum OutsourceError {
     APIKeyNotDefined,
     #[error("could not parse api host as url")]
     HostURLParse,
-    #[error("web request error: {0}")]
-    WebRequestError(#[from] reqwest::Error),
+    #[error("http request error: {0}")]
+    HttpRequestError(#[from] reqwest::Error),
+    #[error("bad http status code: {status} body: {body}")]
+    BadHttpStatusCode { status: StatusCode, body: String },
     #[error("json serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
     #[error("no text in response")]
@@ -42,11 +45,14 @@ fn extract_provider_from_model_name(request: &mut BackendGenerationRequest) -> R
     Ok(provider)
 }
 
-pub async fn generate(mut request: BackendGenerationRequest) -> Result<BackendGenerationResponse> {
+pub async fn generate(
+    mut request: BackendGenerationRequest,
+    api_key: Option<String>,
+) -> Result<BackendGenerationResponse> {
     let provider = extract_provider_from_model_name(&mut request)?;
     match provider {
-        Provider::OpenAI => openai::generate(request, false).await,
-        Provider::OpenAIChat => openai::generate(request, true).await,
-        Provider::HuggingFace => openai::generate(request, false).await,
+        Provider::OpenAI => openai::generate(request, false, api_key).await,
+        Provider::OpenAIChat => openai::generate(request, true, api_key).await,
+        Provider::HuggingFace => huggingface::generate(request, api_key).await,
     }
 }

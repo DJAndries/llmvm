@@ -16,7 +16,7 @@ pub struct Message {
     pub content: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct BackendGenerationRequest {
     pub model: String,
     pub prompt: String,
@@ -30,7 +30,7 @@ pub struct BackendGenerationResponse {
     pub response: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct GenerationRequest {
     pub backend: String,
     pub model: String,
