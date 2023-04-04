@@ -1,11 +1,12 @@
-use std::io;
 use std::process::exit;
+use std::sync::Arc;
 
 use clap::{Args, Subcommand};
-use llmvm_proto::{BackendGenerationRequest, BackendGenerationResponse};
+use llmvm_protocol::stdio::{BackendService, StdioServer};
+use llmvm_protocol::{Backend, BackendGenerationRequest};
 
 #[derive(Args, Clone)]
-pub struct ModelArgs {
+pub struct GenerateModelArgs {
     #[arg(long)]
     model: String,
 
@@ -16,7 +17,7 @@ pub struct ModelArgs {
     max_tokens: u64,
 }
 
-impl Into<BackendGenerationRequest> for ModelArgs {
+impl Into<BackendGenerationRequest> for GenerateModelArgs {
     fn into(self) -> BackendGenerationRequest {
         BackendGenerationRequest {
             model: self.model,
@@ -28,28 +29,40 @@ impl Into<BackendGenerationRequest> for ModelArgs {
 }
 
 #[derive(Subcommand)]
-pub enum InputMode {
-    Spec(ModelArgs),
-    Json,
+pub enum BackendCommand {
+    Generate(GenerateModelArgs),
 }
 
-pub fn get_request(input_mode: &InputMode) -> BackendGenerationRequest {
-    match input_mode {
-        InputMode::Spec(args) => args.clone().into(),
-        InputMode::Json => serde_json::from_reader(io::stdin()).unwrap_or_else(|e| {
-            // TODO: replace with tracing::error
-            eprintln!("Failed to deserialize JSON request: {}", e);
-            exit(1);
-        }),
-    }
-}
-
-pub fn print_response(response: BackendGenerationResponse, input_mode: &InputMode) {
-    println!(
-        "{}",
-        match input_mode {
-            InputMode::Spec(_) => response.response,
-            InputMode::Json => serde_json::to_string(&response).unwrap(),
+pub async fn run_backend<B: Backend + 'static>(
+    command: Option<BackendCommand>,
+    backend: Arc<B>,
+) -> std::io::Result<()> {
+    match command {
+        Some(command) => {
+            let result = match command {
+                BackendCommand::Generate(args) => backend.generate(BackendGenerationRequest {
+                    model: args.model,
+                    prompt: args.prompt,
+                    max_tokens: args.max_tokens,
+                    thread_messages: None,
+                    model_parameters: None,
+                }),
+            }
+            .await;
+            match result {
+                Ok(response) => {
+                    println!("{}", response.response);
+                }
+                Err(e) => {
+                    // TODO: replace with tracing::error
+                    eprintln!("Failed to process request: {}", e);
+                    exit(1);
+                }
+            };
         }
-    );
+        None => {
+            StdioServer::new(BackendService::new(backend)).run().await?;
+        }
+    };
+    Ok(())
 }

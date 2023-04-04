@@ -1,7 +1,8 @@
+use std::sync::Arc;
+
 use clap::{arg, command, Parser};
-use llmvm_backend_util::{get_request, print_response, InputMode};
-use llmvm_outsource::generate;
-use std::process::exit;
+use llmvm_backend_util::{run_backend, BackendCommand};
+use llmvm_outsource::OutsourceBackend;
 
 #[derive(Parser)]
 #[command(version)]
@@ -10,20 +11,12 @@ struct Cli {
     api_key: Option<String>,
 
     #[command(subcommand)]
-    input_mode: InputMode,
+    command: Option<BackendCommand>,
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
 
-    let request = get_request(&cli.input_mode);
-
-    match generate(request, cli.api_key).await {
-        Err(e) => {
-            eprintln!("Failed to produce response: {}", e);
-            exit(1);
-        }
-        Ok(response) => print_response(response, &cli.input_mode),
-    }
+    run_backend(cli.command, Arc::new(OutsourceBackend::new(cli.api_key))).await
 }

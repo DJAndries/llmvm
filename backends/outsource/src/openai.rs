@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use llmvm_proto::{BackendGenerationRequest, BackendGenerationResponse, Message, MessageRole};
+use llmvm_protocol::{
+    BackendGenerationRequest, BackendGenerationResponse, Message, MessageRole, ModelDescription,
+};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
@@ -47,17 +49,18 @@ struct ChatCompletionChoiceMessage {
 
 pub async fn generate(
     mut request: BackendGenerationRequest,
-    is_chat: bool,
-    api_key: Option<String>,
+    model_description: ModelDescription,
+    specified_api_key: Option<String>,
 ) -> Result<BackendGenerationResponse> {
     let (host, api_key) = get_host_and_api_key(
         OPENAI_API_KEY_ENV_KEY,
-        api_key,
+        specified_api_key,
         OPENAI_API_HOST_ENV_KEY,
         DEFAULT_OPENAI_API_HOST,
     )?;
 
-    let endpoint = if is_chat {
+    let is_chat_model = model_description.is_chat_model();
+    let endpoint = if is_chat_model {
         CHAT_COMPLETION_ENDPOINT
     } else {
         COMPLETION_ENDPOINT
@@ -66,10 +69,10 @@ pub async fn generate(
 
     let mut body: HashMap<String, Value> = request.model_parameters.take().unwrap_or_default();
 
-    body.insert(MODEL_KEY.to_string(), request.model.into());
+    body.insert(MODEL_KEY.to_string(), model_description.model_name.into());
     body.insert(MAX_TOKENS_KEY.to_string(), request.max_tokens.into());
-    if is_chat {
-        let mut messages: Vec<_> = request.chat_thread_messages.take().unwrap_or_default();
+    if is_chat_model {
+        let mut messages: Vec<_> = request.thread_messages.take().unwrap_or_default();
         messages.push(Message {
             role: MessageRole::User,
             content: request.prompt,
@@ -89,7 +92,7 @@ pub async fn generate(
 
     let response = check_status_code(response).await?;
 
-    let response = if is_chat {
+    let response = if is_chat_model {
         let mut body: ChatCompletionResponse = response.json().await?;
         let choice = body.choices.pop().ok_or(OutsourceError::NoTextInResponse)?;
         choice.message.content

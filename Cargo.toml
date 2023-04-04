@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "./backends/outsource",
+  "./backends/outsource-cli",
+  "./core",
+  "./core-cli",
+]

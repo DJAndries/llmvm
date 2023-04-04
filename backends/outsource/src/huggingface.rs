@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use llmvm_proto::{BackendGenerationRequest, BackendGenerationResponse};
+use llmvm_protocol::{BackendGenerationRequest, BackendGenerationResponse, ModelDescription};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,22 +32,26 @@ struct ModelResponse {
 
 pub async fn generate(
     mut request: BackendGenerationRequest,
-    api_key: Option<String>,
+    model_description: ModelDescription,
+    specified_api_key: Option<String>,
 ) -> Result<BackendGenerationResponse> {
     let (host, api_key) = get_host_and_api_key(
         HUGGINGFACE_API_KEY_ENV_KEY,
-        api_key,
+        specified_api_key,
         HUGGINGFACE_API_HOST_ENV_KEY,
         DEFAULT_HUGGINGFACE_API_HOST,
     )?;
 
-    let url = if request.model.starts_with(CUSTOM_ENDPOINT_PREFIX) {
-        Url::parse(&request.model[CUSTOM_ENDPOINT_PREFIX.len()..])
+    let url = if model_description
+        .model_name
+        .starts_with(CUSTOM_ENDPOINT_PREFIX)
+    {
+        Url::parse(&model_description.model_name[CUSTOM_ENDPOINT_PREFIX.len()..])
             .map_err(|_| OutsourceError::HostURLParse)?
     } else {
         host.join(MODELS_ENDPOINT)
             .unwrap()
-            .join(&request.model)
+            .join(&model_description.model_name)
             .unwrap()
     };
 

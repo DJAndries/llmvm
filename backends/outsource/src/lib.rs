@@ -2,7 +2,12 @@ mod huggingface;
 mod openai;
 mod util;
 
-use llmvm_proto::{BackendGenerationRequest, BackendGenerationResponse};
+use std::str::FromStr;
+
+use llmvm_protocol::{
+    async_trait, Backend, BackendGenerationRequest, BackendGenerationResponse, ModelDescription,
+    ProtocolError, ProtocolErrorType,
+};
 use reqwest::StatusCode;
 use strum_macros::{Display, EnumString};
 use thiserror::Error;
@@ -25,34 +30,83 @@ pub enum OutsourceError {
     Serialization(#[from] serde_json::Error),
     #[error("no text in response")]
     NoTextInResponse,
+    #[error("failed to parse model name")]
+    ModelDescriptionParse,
 }
 
 #[derive(Display, EnumString)]
-#[strum(serialize_all = "lowercase", ascii_case_insensitive)]
+#[strum(ascii_case_insensitive)]
 enum Provider {
-    OpenAI,
+    #[strum(serialize = "openai-text")]
+    OpenAIText,
     #[strum(serialize = "openai-chat")]
     OpenAIChat,
-    HuggingFace,
+    #[strum(serialize = "huggingface-text")]
+    HuggingFaceText,
 }
 
-fn extract_provider_from_model_name(request: &mut BackendGenerationRequest) -> Result<Provider> {
-    let mut model_name_split = request.model.split("/");
-    let provider_name = model_name_split.next().unwrap();
-    let provider = Provider::try_from(provider_name)
-        .map_err(|_| OutsourceError::ProviderNotFound(provider_name.to_string()))?;
-    request.model = model_name_split.collect::<Vec<&str>>().join("/");
-    Ok(provider)
+impl Into<ProtocolError> for OutsourceError {
+    fn into(self) -> ProtocolError {
+        let error_type = match &self {
+            OutsourceError::ProviderNotFound(_) => ProtocolErrorType::BadRequest,
+            OutsourceError::APIKeyNotDefined => ProtocolErrorType::BadRequest,
+            OutsourceError::HostURLParse => ProtocolErrorType::BadRequest,
+            OutsourceError::HttpRequestError(_) => ProtocolErrorType::Internal,
+            OutsourceError::BadHttpStatusCode { .. } => ProtocolErrorType::Internal,
+            OutsourceError::Serialization(_) => ProtocolErrorType::Internal,
+            OutsourceError::NoTextInResponse => ProtocolErrorType::Internal,
+            OutsourceError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
+        };
+        ProtocolError {
+            error_type,
+            error: Box::new(self),
+        }
+    }
 }
 
-pub async fn generate(
-    mut request: BackendGenerationRequest,
-    api_key: Option<String>,
-) -> Result<BackendGenerationResponse> {
-    let provider = extract_provider_from_model_name(&mut request)?;
-    match provider {
-        Provider::OpenAI => openai::generate(request, false, api_key).await,
-        Provider::OpenAIChat => openai::generate(request, true, api_key).await,
-        Provider::HuggingFace => huggingface::generate(request, api_key).await,
+pub struct OutsourceBackend {
+    specified_api_key: Option<String>,
+}
+
+impl OutsourceBackend {
+    pub fn new(specified_api_key: Option<String>) -> Self {
+        Self { specified_api_key }
+    }
+}
+
+#[async_trait]
+impl Backend for OutsourceBackend {
+    async fn generate(
+        &self,
+        request: BackendGenerationRequest,
+    ) -> std::result::Result<BackendGenerationResponse, ProtocolError> {
+        async {
+            let model_description = ModelDescription::from_str(&request.model)
+                .map_err(|_| OutsourceError::ModelDescriptionParse)?;
+            let provider =
+                Provider::try_from(model_description.provider.as_str()).map_err(|_| {
+                    OutsourceError::ProviderNotFound(model_description.provider.to_string())
+                })?;
+            match provider {
+                Provider::OpenAIText => {
+                    openai::generate(request, model_description, self.specified_api_key.clone())
+                        .await
+                }
+                Provider::OpenAIChat => {
+                    openai::generate(request, model_description, self.specified_api_key.clone())
+                        .await
+                }
+                Provider::HuggingFaceText => {
+                    huggingface::generate(
+                        request,
+                        model_description,
+                        self.specified_api_key.clone(),
+                    )
+                    .await
+                }
+            }
+        }
+        .await
+        .map_err(|e| e.into())
     }
 }

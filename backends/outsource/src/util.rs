@@ -5,7 +5,7 @@ use crate::{OutsourceError, Result};
 
 pub fn get_host_and_api_key(
     api_key_env_key: &str,
-    api_key_from_cli: Option<String>,
+    specified_api_key: Option<String>,
     api_host_env_key: &str,
     default_api_host: &str,
 ) -> Result<(Url, String)> {
@@ -15,7 +15,7 @@ pub fn get_host_and_api_key(
             .as_str(),
     )
     .map_err(|_| OutsourceError::HostURLParse)?;
-    let api_key = api_key_from_cli
+    let api_key = specified_api_key
         .or(env::var(api_key_env_key).ok())
         .ok_or(OutsourceError::APIKeyNotDefined)?;
     Ok((host, api_key))
