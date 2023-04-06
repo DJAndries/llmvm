@@ -21,7 +21,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tower::{timeout::Timeout, Service};
 
 use crate::{
-    Backend, BackendGenerationRequest, BackendGenerationResponse, ProtocolError, ProtocolErrorType,
+    Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
+    GenerationResponse, ProtocolError, ProtocolErrorType,
 };
 
 const STDIO_COMMAND_TIMEOUT_SECS: u64 = 120;
@@ -34,6 +35,16 @@ pub enum BackendRequest {
 #[derive(Serialize, Deserialize)]
 pub enum BackendResponse {
     Generation(BackendGenerationResponse),
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum CoreRequest {
+    Generation(GenerationRequest),
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum CoreResponse {
+    Generation(GenerationResponse),
 }
 
 pub struct BackendService<B>
@@ -49,6 +60,22 @@ where
 {
     pub fn new(backend: Arc<B>) -> Self {
         Self { backend }
+    }
+}
+
+pub struct CoreService<C>
+where
+    C: Core,
+{
+    core: Arc<C>,
+}
+
+impl<C> CoreService<C>
+where
+    C: Core,
+{
+    pub fn new(core: Arc<C>) -> Self {
+        Self { core }
     }
 }
 
@@ -75,14 +102,40 @@ where
         })
     }
 
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 }
 
-#[derive(Debug, Error, Serialize, Deserialize)]
+impl<C> Service<CoreRequest> for CoreService<C>
+where
+    C: Core + 'static,
+{
+    type Response = CoreResponse;
+    type Error = Box<dyn Error + Send + Sync + 'static>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: CoreRequest) -> Self::Future {
+        let core = self.core.clone();
+        Box::pin(async move {
+            Ok(match req {
+                CoreRequest::Generation(req) => core
+                    .generate(req)
+                    .await
+                    .map(|v| CoreResponse::Generation(v)),
+            }?)
+        })
+    }
+
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+}
+
+#[derive(Clone, Debug, Error, Serialize, Deserialize)]
 #[error("{description}")]
 pub struct StdioError {
-    error_type: ProtocolErrorType,
-    description: String,
+    pub error_type: ProtocolErrorType,
+    pub description: String,
 }
 
 impl From<Box<ProtocolError>> for StdioError {
@@ -188,12 +241,12 @@ where
 
 impl<Request, Response> Service<Request> for StdioClient<Request, Response>
 where
-    Request: Serialize + DeserializeOwned + 'static,
-    Response: Serialize + DeserializeOwned,
+    Request: Serialize + DeserializeOwned + Send + Sync + 'static,
+    Response: Serialize + DeserializeOwned + Send + Sync,
 {
     type Response = Result<Response, StdioError>;
     type Error = Box<dyn Error + Send + Sync + 'static>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))

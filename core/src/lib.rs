@@ -9,11 +9,12 @@ use llmvm_protocol::stdio::{BackendRequest, BackendResponse, StdioClient, StdioE
 use llmvm_protocol::tower::timeout::Timeout;
 use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
-    Backend, BackendGenerationRequest, BackendGenerationResponse, GenerationRequest,
+    Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
     GenerationResponse, Message, MessageRole, ModelDescription, ProtocolError, ProtocolErrorType,
 };
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::env;
 use std::{
     cell::{Cell, RefCell},
@@ -29,7 +30,9 @@ use std::{
 use thiserror::Error;
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
-use util::{current_timestamp_secs, get_project_dirs, get_prompts_path, get_threads_path};
+use util::{
+    current_timestamp_secs, get_presets_path, get_project_dirs, get_prompts_path, get_threads_path,
+};
 
 const BACKEND_COMMAND_PREFIX: &str = "llmvm-";
 const BACKEND_COMMAND_SUFFIX: &str = "-cli";
@@ -51,6 +54,8 @@ pub enum CoreError {
     JsonSerialization(#[from] serde_json::Error),
     #[error("thread not found")]
     ThreadNotFound,
+    #[error("preset not found")]
+    PresetNotFound,
     #[error("failed to parse model name")]
     ModelDescriptionParse,
     #[error("backend error (via stdio): {0}")]
@@ -59,14 +64,25 @@ pub enum CoreError {
     Protocol(#[from] ProtocolError),
 }
 
-#[derive(RustEmbed)]
-#[folder = "../prompts"]
-struct BuiltInPrompts;
-
-#[derive(Debug)]
-pub struct ReadyPrompt {
-    system_prompt: Option<String>,
-    main_prompt: String,
+impl Into<ProtocolError> for CoreError {
+    fn into(self) -> ProtocolError {
+        let error_type = match &self {
+            CoreError::IO(_) => ProtocolErrorType::Internal,
+            CoreError::TemplateNotFound => ProtocolErrorType::BadRequest,
+            CoreError::Utf8Error(_) => ProtocolErrorType::BadRequest,
+            CoreError::UserHomeNotFound => ProtocolErrorType::Internal,
+            CoreError::JsonSerialization { .. } => ProtocolErrorType::BadRequest,
+            CoreError::ThreadNotFound => ProtocolErrorType::BadRequest,
+            CoreError::PresetNotFound => ProtocolErrorType::BadRequest,
+            CoreError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
+            CoreError::BackendStdio(error) => error.error_type.clone(),
+            CoreError::Protocol(error) => error.error_type.clone(),
+        };
+        ProtocolError {
+            error_type,
+            error: Box::new(self),
+        }
+    }
 }
 
 struct SystemRoleHelper(Arc<std::sync::Mutex<SystemRoleHelperState>>);
@@ -103,6 +119,16 @@ impl SystemRoleHelperState {
             true => self.out.take().into_string().ok(),
         }
     }
+}
+
+#[derive(RustEmbed)]
+#[folder = "../prompts"]
+struct BuiltInPrompts;
+
+#[derive(Debug)]
+pub struct ReadyPrompt {
+    system_prompt: Option<String>,
+    main_prompt: String,
 }
 
 impl ReadyPrompt {
@@ -169,6 +195,16 @@ impl ReadyPrompt {
     ) -> Result<Self> {
         Self::process(template, parameters, is_chat_model)
     }
+}
+
+pub async fn load_preset(preset_id: &str) -> Result<HashMap<String, Value>> {
+    let preset_file_name = format!("{}.json", preset_id);
+    let preset_path = get_presets_path()?.join(&preset_file_name);
+    if !fs::try_exists(&preset_path).await.unwrap_or_default() {
+        return Err(CoreError::PresetNotFound);
+    }
+    let preset_json = fs::read(preset_path).await?;
+    Ok(serde_json::from_slice(&preset_json)?)
 }
 
 const META_JSON_FILENAME: &str = "meta.json";
@@ -328,9 +364,8 @@ impl LLMVMCore {
         .clone();
         drop(stdio_clients_guard);
 
-        let resp_result = client
-            .lock()
-            .await
+        let mut client_lock = client.lock().await;
+        let resp_result = client_lock
             .call(BackendRequest::Generation(request))
             .await
             .map_err(|e| CoreError::Protocol(ProtocolError::new(ProtocolErrorType::Internal, e)))?;
@@ -342,98 +377,120 @@ impl LLMVMCore {
     pub async fn close_client(&self, model: &str) {
         self.stdio_clients.lock().await.remove(model);
     }
+}
 
-    pub async fn generate(&self, mut request: GenerationRequest) -> Result<GenerationResponse> {
-        let model_description = ModelDescription::from_str(request.model.as_str())
-            .map_err(|_| CoreError::ModelDescriptionParse)?;
-        let is_chat_model = model_description.is_chat_model();
-        let mut prompt = match request.custom_prompt_template.take() {
-            Some(template) => {
-                ReadyPrompt::from_custom_template(
-                    &template,
-                    &request.prompt_parameters,
-                    is_chat_model,
-                )
-                .await?
-            }
-            None => match request.prompt_template_id.take() {
-                Some(template_id) => {
-                    ReadyPrompt::from_stored_template(
-                        &template_id,
+#[llmvm_protocol::async_trait]
+impl Core for LLMVMCore {
+    async fn generate(
+        &self,
+        mut request: GenerationRequest,
+    ) -> std::result::Result<GenerationResponse, ProtocolError> {
+        async {
+            let model_description = ModelDescription::from_str(request.model.as_str())
+                .map_err(|_| CoreError::ModelDescriptionParse)?;
+            let is_chat_model = model_description.is_chat_model();
+            let mut prompt = match request.custom_prompt_template.take() {
+                Some(template) => {
+                    ReadyPrompt::from_custom_template(
+                        &template,
                         &request.prompt_parameters,
                         is_chat_model,
                     )
                     .await?
                 }
-                None => return Err(CoreError::TemplateNotFound),
-            },
-        };
+                None => match request.prompt_template_id.take() {
+                    Some(template_id) => {
+                        ReadyPrompt::from_stored_template(
+                            &template_id,
+                            &request.prompt_parameters,
+                            is_chat_model,
+                        )
+                        .await?
+                    }
+                    None => return Err(CoreError::TemplateNotFound),
+                },
+            };
 
-        let mut thread_messages = match request.existing_thread_id.clone() {
-            Some(thread_id) => Some(
+            let mut thread_messages = match request.existing_thread_id.clone() {
+                Some(thread_id) => Some(
+                    self.thread_manager
+                        .lock()
+                        .await
+                        .get_thread_messages(thread_id)
+                        .await?,
+                ),
+                None => None,
+            };
+            if let Some(content) = prompt.system_prompt.take() {
+                thread_messages
+                    .get_or_insert_with(|| Vec::with_capacity(1))
+                    .push(Message {
+                        role: MessageRole::System,
+                        content,
+                    });
+            }
+
+            let thread_messages_to_save = match request.save_thread {
+                true => {
+                    let mut clone = thread_messages.clone().unwrap_or_default();
+                    clone.push(Message {
+                        role: MessageRole::User,
+                        content: prompt.main_prompt.clone(),
+                    });
+                    Some(clone)
+                }
+                false => None,
+            };
+
+            let mut model_parameters = match request.model_parameters_preset_id {
+                Some(id) => Some(load_preset(&id).await?),
+                None => None,
+            };
+
+            if let Some(explicit_parameters) = request.model_parameters {
+                match model_parameters.as_mut() {
+                    Some(preset_parameters) => preset_parameters.extend(explicit_parameters),
+                    None => model_parameters = Some(explicit_parameters),
+                };
+            }
+
+            let backend_request = BackendGenerationRequest {
+                model: request.model,
+                prompt: prompt.main_prompt,
+                max_tokens: request.max_tokens,
+                thread_messages,
+                model_parameters,
+            };
+
+            let response = self
+                .send_generate_request(backend_request, &model_description)
+                .await?;
+
+            let thread_id = if let Some(mut thread_messages) = thread_messages_to_save {
+                thread_messages.push(Message {
+                    role: MessageRole::Assistant,
+                    content: response.response.clone(),
+                });
+                let thread_id = match request.existing_thread_id {
+                    Some(id) => id,
+                    None => self.thread_manager.lock().await.new_thread_id().await?,
+                };
                 self.thread_manager
                     .lock()
                     .await
-                    .get_thread_messages(thread_id)
-                    .await?,
-            ),
-            None => None,
-        };
-        if let Some(content) = prompt.system_prompt.take() {
-            thread_messages
-                .get_or_insert_with(|| Vec::with_capacity(1))
-                .push(Message {
-                    role: MessageRole::System,
-                    content,
-                });
-        }
-
-        let thread_messages_to_save = match request.save_thread {
-            true => {
-                let mut clone = thread_messages.clone().unwrap_or_default();
-                clone.push(Message {
-                    role: MessageRole::User,
-                    content: prompt.main_prompt.clone(),
-                });
-                Some(clone)
-            }
-            false => None,
-        };
-
-        let backend_request = BackendGenerationRequest {
-            model: request.model,
-            prompt: prompt.main_prompt,
-            max_tokens: request.max_tokens,
-            thread_messages,
-            model_parameters: request.model_parameters,
-        };
-
-        let response = self
-            .send_generate_request(backend_request, &model_description)
-            .await?;
-
-        let thread_id = if let Some(mut thread_messages) = thread_messages_to_save {
-            thread_messages.push(Message {
-                role: MessageRole::Assistant,
-                content: response.response.clone(),
-            });
-            let thread_id = match request.existing_thread_id {
-                Some(id) => id,
-                None => self.thread_manager.lock().await.new_thread_id().await?,
+                    .save_thread(thread_id, thread_messages)
+                    .await?;
+                Some(thread_id)
+            } else {
+                None
             };
-            self.thread_manager
-                .lock()
-                .await
-                .save_thread(thread_id, thread_messages)
-                .await?;
-            Some(thread_id)
-        } else {
-            None
-        };
 
-        Ok(GenerationResponse {
-            response: response.response,
-            thread_id,
-        })
+            Ok(GenerationResponse {
+                response: response.response,
+                thread_id,
+            })
+        }
+        .await
+        .map_err(|e| e.into())
     }
 }

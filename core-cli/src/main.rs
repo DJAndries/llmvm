@@ -1,8 +1,11 @@
-use std::{collections::HashMap, process::exit};
+use std::{collections::HashMap, process::exit, sync::Arc};
 
 use clap::{arg, command, Args, Parser, Subcommand};
 use llmvm_core::LLMVMCore;
-use llmvm_protocol::GenerationRequest;
+use llmvm_protocol::{
+    stdio::{CoreService, StdioServer},
+    Core, GenerationRequest,
+};
 
 #[derive(Parser)]
 #[command(version)]
@@ -25,6 +28,9 @@ pub struct GenerateArgs {
     prompt: String,
 
     #[arg(long)]
+    model_parameters_preset_id: Option<String>,
+
+    #[arg(long)]
     existing_thread_id: Option<u64>,
 
     #[arg(long)]
@@ -38,13 +44,13 @@ pub struct GenerateArgs {
 async fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
 
-    let core = match LLMVMCore::new().await {
+    let core = Arc::new(match LLMVMCore::new().await {
         Ok(core) => core,
         Err(e) => {
             eprintln!("failed to init core: {}", e);
             exit(1);
         }
-    };
+    });
 
     match cli.command {
         Some(command) => match command {
@@ -54,6 +60,7 @@ async fn main() -> std::io::Result<()> {
                     prompt_template_id: None,
                     custom_prompt_template: Some(args.prompt),
                     max_tokens: args.max_tokens,
+                    model_parameters_preset_id: args.model_parameters_preset_id,
                     model_parameters: None,
                     prompt_parameters: HashMap::new(),
                     existing_thread_id: args.existing_thread_id,
@@ -73,7 +80,9 @@ async fn main() -> std::io::Result<()> {
                 }
             }
         },
-        None => todo!(),
+        None => {
+            StdioServer::new(CoreService::new(core)).run().await?;
+        }
     };
     Ok(())
 }

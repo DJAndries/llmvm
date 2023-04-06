@@ -8,6 +8,7 @@ use directories::ProjectDirs;
 use crate::{CoreError, Result};
 
 const PROMPTS_DIR: &str = "prompts";
+const PRESETS_DIR: &str = "presets";
 const THREADS_DIR: &str = "threads";
 
 pub fn get_project_dirs() -> Result<ProjectDirs> {
@@ -20,6 +21,10 @@ pub fn get_prompts_path() -> Result<PathBuf> {
 
 pub fn get_threads_path() -> Result<PathBuf> {
     get_project_dirs().map(|p| p.data_dir().join(THREADS_DIR))
+}
+
+pub fn get_presets_path() -> Result<PathBuf> {
+    get_project_dirs().map(|p| p.data_dir().join(PRESETS_DIR))
 }
 
 pub fn current_timestamp_secs() -> u64 {
