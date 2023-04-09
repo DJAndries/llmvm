@@ -1,0 +1,301 @@
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    time::Duration,
+};
+
+use llmvm_protocol::tower::Service;
+use lsp_types::ExecuteCommandParams;
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::Value;
+use tokio::{
+    io::{
+        stdin, stdout, AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Stdin,
+        Stdout,
+    },
+    process::{ChildStdin, ChildStdout},
+    sync::{
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        oneshot,
+    },
+};
+
+use crate::{
+    jsonrpc::{JsonRpcMessage, JsonRpcRequest},
+    lsp::{
+        LspMessage, CODE_ACTION_METHOD, CODE_COMPLETE_COMMAND_ID, COMMAND_METHOD,
+        CONTENT_LENGTH_HEADER, EXIT_METHOD, INITIALIZE_METHOD,
+    },
+    service::{LspMessageInfo, LspMessageService, LspMessageTrx},
+};
+
+type PendingCallMap = HashMap<String, oneshot::Sender<Option<LspMessage>>>;
+
+pub struct LspStdioPassthrough {
+    our_stdin: Pin<Box<dyn AsyncBufRead>>,
+    our_stdout: Pin<Box<dyn AsyncWrite>>,
+    real_server_stdin: Pin<Box<dyn AsyncWrite>>,
+    real_server_stdout: Pin<Box<dyn AsyncBufRead>>,
+
+    service_rx: mpsc::UnboundedReceiver<LspMessageTrx>,
+    service_tx: Option<mpsc::UnboundedSender<LspMessageTrx>>,
+
+    // for pending service calls from the interceptor
+    pending_interceptor_calls: PendingCallMap,
+    // for intercepted requests which will be sent to the interceptor
+    // once responses have been received
+    pending_intercepted_requests: HashMap<String, JsonRpcRequest>,
+
+    interceptor_service: Option<LspMessageService>,
+}
+
+impl LspStdioPassthrough {
+    pub fn new(
+        our_stdin: Stdin,
+        our_stdout: Stdout,
+        real_server_stdin: ChildStdin,
+        real_server_stdout: ChildStdout,
+    ) -> Self {
+        let (service_tx, service_rx) = mpsc::unbounded_channel();
+        Self {
+            our_stdin: Box::pin(BufReader::new(our_stdin)),
+            our_stdout: Box::pin(our_stdout),
+            real_server_stdin: Box::pin(real_server_stdin),
+            real_server_stdout: Box::pin(BufReader::new(real_server_stdout)),
+            service_rx,
+            service_tx: Some(service_tx),
+            pending_interceptor_calls: HashMap::new(),
+            pending_intercepted_requests: HashMap::new(),
+            interceptor_service: None,
+        }
+    }
+
+    pub fn get_service(&mut self) -> LspMessageService {
+        LspMessageService::new(
+            self.service_tx
+                .take()
+                .expect("service tx should be available"),
+        )
+    }
+
+    pub fn set_interceptor_service(&mut self, service: LspMessageService) {
+        self.interceptor_service = Some(service);
+    }
+
+    async fn maybe_intercept(
+        &mut self,
+        message: LspMessage,
+        to_real_server: bool,
+    ) -> (Option<LspMessage>, bool) {
+        match &message.payload {
+            JsonRpcMessage::Response(resp) => {
+                if let Some(resp_tx) = self.pending_interceptor_calls.remove(&resp.id.to_string()) {
+                    resp_tx
+                        .send(Some(message))
+                        .expect("tried to send response back to caller");
+                    return (None, false);
+                }
+                if let Some(origin_request) = self
+                    .pending_intercepted_requests
+                    .remove(&resp.id.to_string())
+                {
+                    if let Some(service) = self.interceptor_service.as_mut() {
+                        let msg_info = LspMessageInfo {
+                            message: message.clone(),
+                            to_real_server,
+                            origin_request: Some(origin_request),
+                        };
+                        if let Ok(new_msg) = service.call(msg_info).await {
+                            return (new_msg, false);
+                        }
+                    }
+                }
+            }
+            JsonRpcMessage::Request(req) => {
+                match req.method.as_str() {
+                    CODE_ACTION_METHOD | INITIALIZE_METHOD => {
+                        self.pending_intercepted_requests
+                            .insert(req.id.to_string(), req.clone());
+                    }
+                    COMMAND_METHOD => {
+                        if let Ok(execute_params) = serde_json::from_value::<ExecuteCommandParams>(
+                            req.params.clone().unwrap_or_default(),
+                        ) {
+                            if execute_params.command == CODE_COMPLETE_COMMAND_ID {
+                                if let Some(service) = self.interceptor_service.as_mut() {
+                                    let msg_info = LspMessageInfo {
+                                        message: message.clone(),
+                                        to_real_server,
+                                        origin_request: None,
+                                    };
+                                    let new_msg =
+                                        service.call(msg_info).await.ok().unwrap_or_default();
+                                    return (new_msg, false);
+                                }
+                            }
+                        }
+                    }
+                    EXIT_METHOD => return (Some(message), true),
+                    _ => (),
+                };
+            }
+            _ => (),
+        };
+        (Some(message), false)
+    }
+
+    async fn send_message(
+        output: &mut Pin<Box<dyn AsyncWrite>>,
+        message: &LspMessage,
+    ) -> std::io::Result<()> {
+        let payload_vec = match serde_json::to_vec(&message.payload) {
+            Ok(p) => p,
+            // TODO: add tracing for error
+            // Err(_) => return Ok(should_exit),
+            Err(_) => return Ok(()),
+        };
+        for (key, value) in &message.headers {
+            if key != CONTENT_LENGTH_HEADER {
+                let header_line = format!("{}: {}\r\n", key, value);
+                output.write_all(&header_line.as_bytes()).await?;
+            }
+        }
+        let header_line = format!("{}: {}\r\n", CONTENT_LENGTH_HEADER, payload_vec.len());
+        output.write_all(&header_line.as_bytes()).await?;
+        output.write_all("\r\n".as_bytes()).await?;
+        output.write_all(&payload_vec).await?;
+        Ok(())
+    }
+
+    async fn handle_message(&mut self, to_real_server: bool) -> std::io::Result<bool> {
+        let input = match to_real_server {
+            true => &mut self.our_stdin,
+            false => &mut self.real_server_stdout,
+        };
+        let mut content_length: Option<usize> = None;
+        let mut header_line = String::new();
+        let mut headers = HashMap::new();
+        while input.read_line(&mut header_line).await? > 0 {
+            let header_trimmed = header_line.trim();
+            if header_trimmed.is_empty() {
+                if headers.is_empty() {
+                    return Ok(false);
+                }
+                break;
+            }
+            let mut header_split = header_trimmed.split(": ");
+            let header_key = match header_split.next() {
+                None => break,
+                Some(key) => key,
+            };
+            let header_value = match header_split.next() {
+                None => break,
+                Some(value) => value,
+            };
+            if header_key == CONTENT_LENGTH_HEADER {
+                content_length = match header_value.parse::<usize>() {
+                    Ok(length) => Some(length),
+                    Err(_) => break,
+                };
+            }
+            headers.insert(header_key.to_string(), header_value.to_string());
+
+            header_line.clear();
+        }
+        if content_length.is_none() {
+            return Ok(false);
+        }
+        let content_length = content_length.unwrap();
+        let mut payload_vec: Vec<u8> = Vec::new();
+        while payload_vec.len() < content_length {
+            let buffer = input.fill_buf().await?;
+            if buffer.len() == 0 {
+                return Ok(false);
+            }
+            let copy_len = if payload_vec.len() + buffer.len() <= content_length {
+                buffer.len()
+            } else {
+                content_length - payload_vec.len()
+            };
+            payload_vec.extend(&buffer[..copy_len]);
+            input.consume(copy_len);
+        }
+
+        let payload = match serde_json::from_slice::<Value>(&payload_vec) {
+            Ok(payload) => match JsonRpcMessage::try_from(payload) {
+                Ok(payload) => payload,
+                Err(_) => return Ok(false),
+            },
+            // TODO: add tracing for error
+            Err(_) => return Ok(false),
+        };
+
+        let (message, should_exit) = self
+            .maybe_intercept(LspMessage { headers, payload }, to_real_server)
+            .await;
+
+        if let Some(message) = message {
+            let output = match to_real_server {
+                true => &mut self.real_server_stdin,
+                false => &mut self.our_stdout,
+            };
+            Self::send_message(output, &message).await?;
+        }
+
+        Ok(should_exit)
+    }
+
+    pub async fn send_message_for_service(
+        &mut self,
+        req: LspMessageInfo,
+        resp_tx: oneshot::Sender<Option<LspMessage>>,
+    ) -> std::io::Result<()> {
+        let resp_tx = match &req.message.payload {
+            JsonRpcMessage::Request(req) => {
+                self.pending_interceptor_calls
+                    .insert(req.id.to_string(), resp_tx);
+                None
+            }
+            _ => Some(resp_tx),
+        };
+        let output = match req.to_real_server {
+            true => &mut self.real_server_stdin,
+            false => &mut self.our_stdout,
+        };
+        Self::send_message(output, &req.message).await?;
+        if let Some(resp_tx) = resp_tx {
+            resp_tx
+                .send(None)
+                .expect("tried to send response back to caller");
+        }
+        Ok(())
+    }
+
+    pub async fn run(&mut self) -> std::io::Result<()> {
+        loop {
+            let should_exit = tokio::select! {
+                _ = self.our_stdin.fill_buf() => {
+                    self.handle_message(true).await?
+                },
+                _ = self.real_server_stdout.fill_buf() => {
+                    self.handle_message(false).await?
+                }
+                req = self.service_rx.recv() => {
+                    let (req, resp_tx) = req.unwrap();
+                    self.send_message_for_service(req, resp_tx).await?;
+                    false
+                }
+            };
+            if should_exit {
+                break;
+            }
+        }
+        // Drop service to drop underlying mpsc channel,
+        // so interceptor is notified to exit
+        self.interceptor_service = None;
+        Ok(())
+    }
+}
