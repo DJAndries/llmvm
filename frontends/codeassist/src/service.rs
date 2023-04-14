@@ -12,8 +12,19 @@ pub struct LspMessageInfo {
     pub origin_request: Option<JsonRpcRequest>,
 }
 
+impl LspMessageInfo {
+    pub fn new(message: LspMessage, to_real_server: bool) -> Self {
+        Self {
+            message,
+            to_real_server,
+            origin_request: None,
+        }
+    }
+}
+
 pub type LspMessageTrx = (LspMessageInfo, oneshot::Sender<Option<LspMessage>>);
 
+#[derive(Clone)]
 pub struct LspMessageService {
     tx: mpsc::UnboundedSender<LspMessageTrx>,
 }

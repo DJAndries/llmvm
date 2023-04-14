@@ -7,8 +7,13 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Result;
 use llmvm_protocol::tower::Service;
-use lsp_types::ExecuteCommandParams;
+use lsp_types::{
+    notification::{Exit, Notification},
+    request::{CodeActionRequest, ExecuteCommand, Initialize, Request},
+    ExecuteCommandParams,
+};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use tokio::{
@@ -25,10 +30,7 @@ use tokio::{
 
 use crate::{
     jsonrpc::{JsonRpcMessage, JsonRpcRequest},
-    lsp::{
-        LspMessage, CODE_ACTION_METHOD, CODE_COMPLETE_COMMAND_ID, COMMAND_METHOD,
-        CONTENT_LENGTH_HEADER, EXIT_METHOD, INITIALIZE_METHOD,
-    },
+    lsp::{LspMessage, CODE_COMPLETE_COMMAND_ID, CONTENT_LENGTH_HEADER},
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
 };
 
@@ -50,6 +52,8 @@ pub struct LspStdioPassthrough {
     pending_intercepted_requests: HashMap<String, JsonRpcRequest>,
 
     interceptor_service: Option<LspMessageService>,
+
+    new_request_next_id: u32,
 }
 
 impl LspStdioPassthrough {
@@ -70,6 +74,7 @@ impl LspStdioPassthrough {
             pending_interceptor_calls: HashMap::new(),
             pending_intercepted_requests: HashMap::new(),
             interceptor_service: None,
+            new_request_next_id: u32::MAX - 1,
         }
     }
 
@@ -89,7 +94,7 @@ impl LspStdioPassthrough {
         &mut self,
         message: LspMessage,
         to_real_server: bool,
-    ) -> (Option<LspMessage>, bool) {
+    ) -> (Option<LspMessageInfo>, bool) {
         match &message.payload {
             JsonRpcMessage::Response(resp) => {
                 if let Some(resp_tx) = self.pending_interceptor_calls.remove(&resp.id.to_string()) {
@@ -109,18 +114,21 @@ impl LspStdioPassthrough {
                             origin_request: Some(origin_request),
                         };
                         if let Ok(new_msg) = service.call(msg_info).await {
-                            return (new_msg, false);
+                            return (
+                                new_msg.map(|m| LspMessageInfo::new(m, to_real_server)),
+                                false,
+                            );
                         }
                     }
                 }
             }
             JsonRpcMessage::Request(req) => {
                 match req.method.as_str() {
-                    CODE_ACTION_METHOD | INITIALIZE_METHOD => {
+                    CodeActionRequest::METHOD | Initialize::METHOD => {
                         self.pending_intercepted_requests
                             .insert(req.id.to_string(), req.clone());
                     }
-                    COMMAND_METHOD => {
+                    ExecuteCommand::METHOD => {
                         if let Ok(execute_params) = serde_json::from_value::<ExecuteCommandParams>(
                             req.params.clone().unwrap_or_default(),
                         ) {
@@ -133,24 +141,26 @@ impl LspStdioPassthrough {
                                     };
                                     let new_msg =
                                         service.call(msg_info).await.ok().unwrap_or_default();
-                                    return (new_msg, false);
+                                    return (new_msg.map(|m| LspMessageInfo::new(m, false)), false);
                                 }
                             }
                         }
                     }
-                    EXIT_METHOD => return (Some(message), true),
+                    Exit::METHOD => {
+                        return (Some(LspMessageInfo::new(message, to_real_server)), true)
+                    }
                     _ => (),
                 };
             }
             _ => (),
         };
-        (Some(message), false)
+        (Some(LspMessageInfo::new(message, to_real_server)), false)
     }
 
     async fn send_message(
         output: &mut Pin<Box<dyn AsyncWrite>>,
         message: &LspMessage,
-    ) -> std::io::Result<()> {
+    ) -> Result<()> {
         let payload_vec = match serde_json::to_vec(&message.payload) {
             Ok(p) => p,
             // TODO: add tracing for error
@@ -170,7 +180,7 @@ impl LspStdioPassthrough {
         Ok(())
     }
 
-    async fn handle_message(&mut self, to_real_server: bool) -> std::io::Result<bool> {
+    async fn handle_message(&mut self, to_real_server: bool) -> Result<bool> {
         let input = match to_real_server {
             true => &mut self.our_stdin,
             false => &mut self.real_server_stdout,
@@ -233,16 +243,16 @@ impl LspStdioPassthrough {
             Err(_) => return Ok(false),
         };
 
-        let (message, should_exit) = self
+        let (message_info, should_exit) = self
             .maybe_intercept(LspMessage { headers, payload }, to_real_server)
             .await;
 
-        if let Some(message) = message {
-            let output = match to_real_server {
+        if let Some(message_info) = message_info {
+            let output = match message_info.to_real_server {
                 true => &mut self.real_server_stdin,
                 false => &mut self.our_stdout,
             };
-            Self::send_message(output, &message).await?;
+            Self::send_message(output, &message_info.message).await?;
         }
 
         Ok(should_exit)
@@ -250,11 +260,17 @@ impl LspStdioPassthrough {
 
     pub async fn send_message_for_service(
         &mut self,
-        req: LspMessageInfo,
+        mut req: LspMessageInfo,
         resp_tx: oneshot::Sender<Option<LspMessage>>,
-    ) -> std::io::Result<()> {
-        let resp_tx = match &req.message.payload {
+    ) -> Result<()> {
+        let resp_tx = match &mut req.message.payload {
             JsonRpcMessage::Request(req) => {
+                // if request id was not provided for interceptor,
+                // generate one
+                if req.id.is_null() {
+                    req.id = self.new_request_next_id.into();
+                    self.new_request_next_id -= 1;
+                }
                 self.pending_interceptor_calls
                     .insert(req.id.to_string(), resp_tx);
                 None
@@ -274,7 +290,7 @@ impl LspStdioPassthrough {
         Ok(())
     }
 
-    pub async fn run(&mut self) -> std::io::Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         loop {
             let should_exit = tokio::select! {
                 _ = self.our_stdin.fill_buf() => {

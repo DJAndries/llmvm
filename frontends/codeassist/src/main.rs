@@ -3,7 +3,9 @@ use std::{
     process::{exit, Stdio},
 };
 
+use anyhow::{anyhow, Context, Result};
 use interceptor::LspInterceptor;
+use llmvm_protocol::stdio::StdioClient;
 use passthrough::LspStdioPassthrough;
 use tokio::{
     io::{stdin, stdout, Stdin},
@@ -11,21 +13,38 @@ use tokio::{
 };
 
 mod actions;
+mod complete;
 mod interceptor;
 mod jsonrpc;
 mod lsp;
 mod passthrough;
 mod service;
+mod snippet;
+
+const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> Result<()> {
+    // TODO: consider writing logs to file
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .init();
+
     let args: Vec<String> = env::args().collect();
 
-    let mut child = Command::new(args[1].as_str())
+    let real_server_name = args
+        .get(1)
+        .ok_or(anyhow!("expected real server name in args"))?;
+    let real_server_args = match args.len() > 2 {
+        false => Vec::new(),
+        true => args[2..].to_vec(),
+    };
+    let mut child = Command::new(real_server_name)
+        .args(real_server_args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .unwrap();
+        .context("failed to start real server")?;
 
     let mut passthrough = LspStdioPassthrough::new(
         stdin(),
@@ -34,7 +53,11 @@ async fn main() -> std::io::Result<()> {
         child.stdout.take().unwrap(),
     );
 
-    let mut interceptor = LspInterceptor::new(passthrough.get_service());
+    let llmvm_core_service = StdioClient::new(LLMVM_CORE_CLI_COMMAND, &[])
+        .await
+        .context("failed to start llmvm-core-cli")?;
+
+    let mut interceptor = LspInterceptor::new(passthrough.get_service(), llmvm_core_service);
 
     passthrough.set_interceptor_service(interceptor.get_service());
 
@@ -42,7 +65,7 @@ async fn main() -> std::io::Result<()> {
 
     passthrough.run().await?;
 
-    interceptor_handle.await.unwrap();
+    interceptor_handle.await?;
 
     if let Some(status_code) = child.wait().await?.code() {
         exit(status_code)

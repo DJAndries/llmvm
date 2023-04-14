@@ -1,9 +1,11 @@
+use anyhow::Result;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 pub const ID_KEY: &str = "id";
 pub const METHOD_KEY: &str = "method";
+const JSON_RPC_VERSION: &str = "2.0";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -54,6 +56,37 @@ pub enum JsonRpcMessage {
     Request(JsonRpcRequest),
     Response(JsonRpcResponse),
     Notification(JsonRpcNotification),
+}
+
+impl JsonRpcMessage {
+    pub fn new_request(method: String, params: Option<Value>) -> Self {
+        Self::Request(JsonRpcRequest {
+            jsonrpc_version: JSON_RPC_VERSION.to_string(),
+            method,
+            params,
+            id: Value::Null,
+        })
+    }
+
+    pub fn new_response(result: Result<Value>, id: Value) -> Self {
+        let (error, result) = match result {
+            Ok(result) => (None, Some(result)),
+            Err(e) => (
+                Some(JsonRpcResponseError {
+                    code: JsonRpcErrorCode::InternalError,
+                    message: e.to_string(),
+                    data: None,
+                }),
+                None,
+            ),
+        };
+        Self::Response(JsonRpcResponse {
+            jsonrpc_version: JSON_RPC_VERSION.to_string(),
+            result,
+            error,
+            id: id.into(),
+        })
+    }
 }
 
 impl TryFrom<serde_json::Value> for JsonRpcMessage {
