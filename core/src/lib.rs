@@ -2,8 +2,8 @@ mod util;
 
 use directories::ProjectDirs;
 use handlebars::{
-    Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext, Renderable,
-    StringOutput,
+    Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext, RenderError,
+    Renderable, StringOutput,
 };
 use llmvm_protocol::stdio::{BackendRequest, BackendResponse, StdioClient, StdioError};
 use llmvm_protocol::tower::timeout::Timeout;
@@ -30,6 +30,7 @@ use std::{
 use thiserror::Error;
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
+use tracing::info;
 use util::{
     current_timestamp_secs, get_presets_path, get_project_dirs, get_prompts_path, get_threads_path,
 };
@@ -62,6 +63,8 @@ pub enum CoreError {
     BackendStdio(#[from] StdioError),
     #[error("backend error: {0}")]
     Protocol(#[from] ProtocolError),
+    #[error("tempate render error: {0}")]
+    TemplateRender(#[from] RenderError),
 }
 
 impl Into<ProtocolError> for CoreError {
@@ -77,6 +80,7 @@ impl Into<ProtocolError> for CoreError {
             CoreError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
             CoreError::BackendStdio(error) => error.error_type.clone(),
             CoreError::Protocol(error) => error.error_type.clone(),
+            CoreError::TemplateRender(error) => ProtocolErrorType::BadRequest,
         };
         ProtocolError {
             error_type,
@@ -122,7 +126,7 @@ impl SystemRoleHelperState {
 }
 
 #[derive(RustEmbed)]
-#[folder = "../prompts"]
+#[folder = "./prompts"]
 struct BuiltInPrompts;
 
 #[derive(Debug)]
@@ -143,11 +147,7 @@ impl ReadyPrompt {
         Ok(std::str::from_utf8(embedded_file.data.as_ref())?.to_string())
     }
 
-    fn process(
-        template: &str,
-        parameters: &HashMap<String, String>,
-        is_chat_model: bool,
-    ) -> Result<Self> {
+    fn process(template: &str, parameters: &Value, is_chat_model: bool) -> Result<Self> {
         let mut handlebars = Handlebars::new();
         let system_role_helper_state =
             Arc::new(std::sync::Mutex::new(SystemRoleHelperState::default()));
@@ -157,8 +157,7 @@ impl ReadyPrompt {
         );
 
         let mut main_prompt = handlebars
-            .render_template(template, parameters)
-            .unwrap()
+            .render_template(template, parameters)?
             .trim()
             .to_string();
 
@@ -181,7 +180,7 @@ impl ReadyPrompt {
 
     pub async fn from_stored_template(
         template_id: &str,
-        parameters: &HashMap<String, String>,
+        parameters: &Value,
         is_chat_model: bool,
     ) -> Result<Self> {
         let template = Self::load_template(template_id).await?;
@@ -190,7 +189,7 @@ impl ReadyPrompt {
 
     pub async fn from_custom_template(
         template: &str,
-        parameters: &HashMap<String, String>,
+        parameters: &Value,
         is_chat_model: bool,
     ) -> Result<Self> {
         Self::process(template, parameters, is_chat_model)
@@ -462,6 +461,10 @@ impl Core for LLMVMCore {
                 model_parameters,
             };
 
+            info!(
+                "Sending backend request with prompt: {}",
+                backend_request.prompt
+            );
             let response = self
                 .send_generate_request(backend_request, &model_description)
                 .await?;

@@ -1,0 +1,13 @@
+{{#system_role}}
+Complete the following snippet of code in Rust. The snippet may contain a comment explaining what it does. Output the completed code snippet. Do not explain what the code does.
+{{/system_role}}
+
+{{#each typedef_context_snippets}}
+Here is the type definition for {{this.descriptions}}:
+
+{{this.snippet}}
+
+{{/each}}
+Here is the snippet of code to complete:
+
+{{main_snippet}}

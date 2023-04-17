@@ -8,3 +8,5 @@ clap = { version = "4.1", features = ["derive"] }
 llmvm-core = { path = "../core" }
 llmvm-protocol = { path = "../protocol", features = ["stdio"] }
 tokio = { version = "1.26", features = ["rt", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

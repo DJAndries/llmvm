@@ -1,13 +1,13 @@
+use lsp_types::{Range, Url};
 use std::{
     cmp::min,
     collections::{BTreeMap, HashMap},
 };
-
-use lsp_types::{Range, Url};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, BufReader},
 };
+use tokio_stream::{wrappers::LinesStream, StreamExt};
 
 #[derive(Debug)]
 pub struct SnippetInfo {
@@ -30,63 +30,61 @@ type StartLineToCharRangeMap = BTreeMap<u32, Vec<CharRangeInfo>>;
 
 #[derive(Default)]
 pub struct SnippetFetcher {
-    uri_ranges: HashMap<Url, StartLineToCharRangeMap>,
-    last_id: usize,
+    content: HashMap<Url, Vec<String>>,
 }
 
 impl SnippetFetcher {
-    pub fn add_snippet_request(&mut self, uri: Url, range: Range, description: String) {
-        let ranges = self.uri_ranges.entry(uri).or_default();
-        let start_line_ranges = ranges.entry(range.start.line).or_default();
-        let id = self.last_id + 1;
-        start_line_ranges.push(CharRangeInfo {
-            range,
-            description,
-            id,
-        });
-        self.last_id = id;
+    pub async fn load_file(&mut self, uri: Url) -> std::io::Result<()> {
+        if self.content.contains_key(&uri) {
+            return Ok(());
+        }
+        let reader = BufReader::new(File::open(uri.path()).await?);
+        self.content.insert(
+            uri,
+            LinesStream::new(reader.lines())
+                .collect::<Result<Vec<String>, std::io::Error>>()
+                .await?,
+        );
+        Ok(())
     }
 
-    pub async fn load(&self) -> std::io::Result<Vec<SnippetInfo>> {
-        let mut pre_snippets = HashMap::new();
-        for (uri, start_line_ranges) in &self.uri_ranges {
-            let mut open_ranges: Vec<&CharRangeInfo> = Vec::new();
-            let mut lines = BufReader::new(File::open(uri.path()).await?).lines();
-            let mut line_num = 0;
-            while let Some(line) = lines.next_line().await? {
-                if let Some(char_ranges) = start_line_ranges.get(&line_num) {
-                    open_ranges.extend(char_ranges);
-                }
-                for open_range in &open_ranges {
-                    let pre_snippet =
-                        pre_snippets
-                            .entry(open_range.id)
-                            .or_insert_with(|| PreSnippetInfo {
-                                description: open_range.description.clone(),
-                                lines: Vec::new(),
-                            });
-                    let start_index = match open_range.range.start.line == line_num {
-                        true => min(line.len(), open_range.range.start.character as usize),
-                        false => 0,
-                    };
-                    let end_index = match open_range.range.end.line == line_num {
-                        true => min(line.len(), open_range.range.end.character as usize),
-                        false => line.len(),
-                    };
-                    pre_snippet
-                        .lines
-                        .push(line[start_index..end_index].to_string());
-                }
-                open_ranges.retain(|open_range| open_range.range.end.line != line_num);
-                line_num += 1;
-            }
-        }
-        Ok(pre_snippets
-            .into_values()
-            .map(|p| SnippetInfo {
-                description: p.description,
-                snippet: p.lines.join("\n"),
+    pub fn get_line(&self, uri: &Url, line: usize) -> Option<&str> {
+        self.content
+            .get(uri)
+            .and_then(|lines| lines.get(line))
+            .map(|v| v.as_str())
+    }
+
+    pub fn get_snippet(&self, uri: &Url, range: &Range) -> Option<String> {
+        self.content
+            .get(uri)
+            .filter(|lines| !lines.is_empty())
+            .map(|lines| {
+                let start_line = min(range.start.line as usize, lines.len() - 1);
+                let end_line = min(range.end.line as usize, lines.len() - 1);
+                let range_lines = lines[start_line..=end_line]
+                    .iter()
+                    .zip(start_line..=end_line)
+                    .map(|(line, line_index)| {
+                        let start_char = match line_index == start_line {
+                            true => min(
+                                range.start.character as usize,
+                                if line.is_empty() { 0 } else { line.len() - 1 },
+                            ),
+                            false => 0,
+                        };
+                        let end_char = match line_index == end_line {
+                            true => min(range.end.character as usize, line.len()),
+                            false => line.len(),
+                        };
+                        &line[start_char..end_char]
+                    })
+                    .collect::<Vec<&str>>();
+                range_lines.join("\n")
             })
-            .collect())
+    }
+
+    pub fn line_count(&self, uri: &Url) -> usize {
+        self.content.get(uri).map(|v| v.len()).unwrap_or_default()
     }
 }

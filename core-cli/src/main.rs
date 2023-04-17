@@ -6,6 +6,7 @@ use llmvm_protocol::{
     stdio::{CoreService, StdioServer},
     Core, GenerationRequest,
 };
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(version)]
@@ -42,6 +43,11 @@ pub struct GenerateArgs {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .init();
+
     let cli = Cli::parse();
 
     let core = Arc::new(match LLMVMCore::new().await {
@@ -62,7 +68,7 @@ async fn main() -> std::io::Result<()> {
                     max_tokens: args.max_tokens,
                     model_parameters_preset_id: args.model_parameters_preset_id,
                     model_parameters: None,
-                    prompt_parameters: HashMap::new(),
+                    prompt_parameters: Default::default(),
                     existing_thread_id: args.existing_thread_id,
                     save_thread: args.save_thread,
                 };

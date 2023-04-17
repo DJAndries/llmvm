@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Result};
-use lsp_types::{request::Request, Range, TextDocumentIdentifier};
+use lsp_types::{notification::Notification, request::Request, Range, TextDocumentIdentifier};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
@@ -18,12 +18,22 @@ pub struct LspMessage {
 }
 
 impl LspMessage {
-    pub fn new_request<R: Request>(request: R::Params) -> Result<Self, serde_json::Error> {
+    pub fn new_request<R: Request>(params: R::Params) -> Result<Self, serde_json::Error> {
         Ok(Self {
             headers: HashMap::new(),
             payload: JsonRpcMessage::new_request(
                 R::METHOD.to_string(),
-                Some(serde_json::to_value(request)?),
+                Some(serde_json::to_value(params)?),
+            ),
+        })
+    }
+
+    pub fn new_notification<N: Notification>(params: N::Params) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            headers: HashMap::new(),
+            payload: JsonRpcMessage::new_notification(
+                N::METHOD.to_string(),
+                Some(serde_json::to_value(params)?),
             ),
         })
     }
@@ -46,10 +56,7 @@ impl LspMessage {
                     error.message
                 ),
                 None => {
-                    let result = resp
-                        .result
-                        .as_ref()
-                        .ok_or(anyhow!("expected result in lsp message response"))?;
+                    let result = resp.result.as_ref().unwrap_or(&Value::Null);
                     serde_json::from_value(result.clone())?
                 }
             },

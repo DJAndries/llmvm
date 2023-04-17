@@ -27,12 +27,15 @@ use tokio::{
         oneshot,
     },
 };
+use tracing::debug;
 
 use crate::{
     jsonrpc::{JsonRpcMessage, JsonRpcRequest},
     lsp::{LspMessage, CODE_COMPLETE_COMMAND_ID, CONTENT_LENGTH_HEADER},
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
 };
+
+const OUR_REQ_ID_PREFIX: &str = "llmvm/";
 
 type PendingCallMap = HashMap<String, oneshot::Sender<Option<LspMessage>>>;
 
@@ -53,7 +56,7 @@ pub struct LspStdioPassthrough {
 
     interceptor_service: Option<LspMessageService>,
 
-    new_request_next_id: u32,
+    new_request_last_id: usize,
 }
 
 impl LspStdioPassthrough {
@@ -74,7 +77,7 @@ impl LspStdioPassthrough {
             pending_interceptor_calls: HashMap::new(),
             pending_intercepted_requests: HashMap::new(),
             interceptor_service: None,
-            new_request_next_id: u32::MAX - 1,
+            new_request_last_id: 0,
         }
     }
 
@@ -94,14 +97,14 @@ impl LspStdioPassthrough {
         &mut self,
         message: LspMessage,
         to_real_server: bool,
-    ) -> (Option<LspMessageInfo>, bool) {
+    ) -> Result<(Option<LspMessageInfo>, bool)> {
         match &message.payload {
             JsonRpcMessage::Response(resp) => {
                 if let Some(resp_tx) = self.pending_interceptor_calls.remove(&resp.id.to_string()) {
                     resp_tx
                         .send(Some(message))
                         .expect("tried to send response back to caller");
-                    return (None, false);
+                    return Ok((None, false));
                 }
                 if let Some(origin_request) = self
                     .pending_intercepted_requests
@@ -114,10 +117,10 @@ impl LspStdioPassthrough {
                             origin_request: Some(origin_request),
                         };
                         if let Ok(new_msg) = service.call(msg_info).await {
-                            return (
+                            return Ok((
                                 new_msg.map(|m| LspMessageInfo::new(m, to_real_server)),
                                 false,
-                            );
+                            ));
                         }
                     }
                 }
@@ -127,6 +130,17 @@ impl LspStdioPassthrough {
                     CodeActionRequest::METHOD | Initialize::METHOD => {
                         self.pending_intercepted_requests
                             .insert(req.id.to_string(), req.clone());
+                        if req.method == Initialize::METHOD {
+                            if let Some(service) = self.interceptor_service.as_mut() {
+                                service
+                                    .call(LspMessageInfo {
+                                        message: message.clone(),
+                                        to_real_server,
+                                        origin_request: None,
+                                    })
+                                    .await?;
+                            }
+                        }
                     }
                     ExecuteCommand::METHOD => {
                         if let Ok(execute_params) = serde_json::from_value::<ExecuteCommandParams>(
@@ -139,22 +153,26 @@ impl LspStdioPassthrough {
                                         to_real_server,
                                         origin_request: None,
                                     };
-                                    let new_msg =
-                                        service.call(msg_info).await.ok().unwrap_or_default();
-                                    return (new_msg.map(|m| LspMessageInfo::new(m, false)), false);
+                                    let new_msg = service.call(msg_info).await?;
+                                    return Ok((
+                                        new_msg.map(|m| LspMessageInfo::new(m, false)),
+                                        false,
+                                    ));
                                 }
                             }
                         }
                     }
-                    Exit::METHOD => {
-                        return (Some(LspMessageInfo::new(message, to_real_server)), true)
-                    }
                     _ => (),
                 };
             }
-            _ => (),
+            JsonRpcMessage::Notification(notification) => match notification.method.as_str() {
+                Exit::METHOD => {
+                    return Ok((Some(LspMessageInfo::new(message, to_real_server)), true))
+                }
+                _ => (),
+            },
         };
-        (Some(LspMessageInfo::new(message, to_real_server)), false)
+        Ok((Some(LspMessageInfo::new(message, to_real_server)), false))
     }
 
     async fn send_message(
@@ -177,6 +195,7 @@ impl LspStdioPassthrough {
         output.write_all(&header_line.as_bytes()).await?;
         output.write_all("\r\n".as_bytes()).await?;
         output.write_all(&payload_vec).await?;
+        output.flush().await?;
         Ok(())
     }
 
@@ -223,7 +242,7 @@ impl LspStdioPassthrough {
         while payload_vec.len() < content_length {
             let buffer = input.fill_buf().await?;
             if buffer.len() == 0 {
-                return Ok(false);
+                return Ok(true);
             }
             let copy_len = if payload_vec.len() + buffer.len() <= content_length {
                 buffer.len()
@@ -245,7 +264,7 @@ impl LspStdioPassthrough {
 
         let (message_info, should_exit) = self
             .maybe_intercept(LspMessage { headers, payload }, to_real_server)
-            .await;
+            .await?;
 
         if let Some(message_info) = message_info {
             let output = match message_info.to_real_server {
@@ -268,8 +287,9 @@ impl LspStdioPassthrough {
                 // if request id was not provided for interceptor,
                 // generate one
                 if req.id.is_null() {
-                    req.id = self.new_request_next_id.into();
-                    self.new_request_next_id -= 1;
+                    let new_id = self.new_request_last_id + 1;
+                    req.id = format!("{}{}", OUR_REQ_ID_PREFIX, new_id).into();
+                    self.new_request_last_id = new_id;
                 }
                 self.pending_interceptor_calls
                     .insert(req.id.to_string(), resp_tx);
@@ -309,6 +329,7 @@ impl LspStdioPassthrough {
                 break;
             }
         }
+        debug!("passthrough is returning");
         // Drop service to drop underlying mpsc channel,
         // so interceptor is notified to exit
         self.interceptor_service = None;

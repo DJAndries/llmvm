@@ -96,7 +96,7 @@ pub struct GenerationRequest {
     pub max_tokens: u64,
     pub model_parameters: Option<HashMap<String, Value>>,
     pub model_parameters_preset_id: Option<String>,
-    pub prompt_parameters: HashMap<String, String>,
+    pub prompt_parameters: Value,
     pub existing_thread_id: Option<u64>,
     pub save_thread: bool,
 }

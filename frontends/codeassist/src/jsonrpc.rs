@@ -1,7 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use serde_repr::{Deserialize_repr, Serialize_repr};
 
 pub const ID_KEY: &str = "id";
 pub const METHOD_KEY: &str = "method";
@@ -35,12 +34,12 @@ pub struct JsonRpcNotification {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcResponseError {
-    pub code: JsonRpcErrorCode,
+    pub code: i32,
     pub message: String,
     pub data: Option<Value>,
 }
 
-#[derive(Clone, Serialize_repr, Deserialize_repr, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 #[repr(i32)]
 pub enum JsonRpcErrorCode {
     ParseError = -32700,
@@ -68,12 +67,20 @@ impl JsonRpcMessage {
         })
     }
 
+    pub fn new_notification(method: String, params: Option<Value>) -> Self {
+        Self::Notification(JsonRpcNotification {
+            jsonrpc_version: JSON_RPC_VERSION.to_string(),
+            method,
+            params,
+        })
+    }
+
     pub fn new_response(result: Result<Value>, id: Value) -> Self {
         let (error, result) = match result {
             Ok(result) => (None, Some(result)),
             Err(e) => (
                 Some(JsonRpcResponseError {
-                    code: JsonRpcErrorCode::InternalError,
+                    code: JsonRpcErrorCode::InternalError as i32,
                     message: e.to_string(),
                     data: None,
                 }),

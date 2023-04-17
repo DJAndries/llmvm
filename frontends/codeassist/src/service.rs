@@ -37,7 +37,7 @@ impl LspMessageService {
 
 impl Service<LspMessageInfo> for LspMessageService {
     type Response = Option<LspMessage>;
-    type Error = Box<dyn Error + Send + Sync + 'static>;
+    type Error = anyhow::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(

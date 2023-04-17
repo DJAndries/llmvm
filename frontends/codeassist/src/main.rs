@@ -8,11 +8,11 @@ use interceptor::LspInterceptor;
 use llmvm_protocol::stdio::StdioClient;
 use passthrough::LspStdioPassthrough;
 use tokio::{
-    io::{stdin, stdout, Stdin},
+    io::{stdin, stdout},
     process::Command,
 };
+use tracing_subscriber::EnvFilter;
 
-mod actions;
 mod complete;
 mod interceptor;
 mod jsonrpc;
@@ -27,6 +27,7 @@ const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
 async fn main() -> Result<()> {
     // TODO: consider writing logs to file
     tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
 
