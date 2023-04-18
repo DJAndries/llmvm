@@ -1,5 +1,11 @@
 {{#system_role}}
-Complete the following snippet of code in Rust. The snippet may contain a comment explaining what it does. Output the completed code snippet. Do not explain what the code does.
+You will complete the user's incomplete snippet of code in {{lang}}. They may provide context in the form of type definitions. You must abide by the following rules:
+
+- Only output the completed code snippet
+- You may embed comments within the snippet
+- Do not repeat type definitions that were provided to you
+- Do not include anything before the completed snippet in your response
+- Do not include anything after the completed snippet in your response
 {{/system_role}}
 
 {{#each typedef_context_snippets}}

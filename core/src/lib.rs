@@ -30,7 +30,7 @@ use std::{
 use thiserror::Error;
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
-use tracing::info;
+use tracing::{debug, info};
 use util::{
     current_timestamp_secs, get_presets_path, get_project_dirs, get_prompts_path, get_threads_path,
 };
@@ -465,9 +465,15 @@ impl Core for LLMVMCore {
                 "Sending backend request with prompt: {}",
                 backend_request.prompt
             );
+            debug!(
+                "Thread messages for requests: {:#?}",
+                backend_request.thread_messages
+            );
             let response = self
                 .send_generate_request(backend_request, &model_description)
                 .await?;
+
+            debug!("Response: {}", response.response);
 
             let thread_id = if let Some(mut thread_messages) = thread_messages_to_save {
                 thread_messages.push(Message {

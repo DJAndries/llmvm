@@ -14,12 +14,12 @@ use tokio::{
 use tracing_subscriber::EnvFilter;
 
 mod complete;
+mod content;
 mod interceptor;
 mod jsonrpc;
 mod lsp;
 mod passthrough;
 mod service;
-mod snippet;
 
 const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
 

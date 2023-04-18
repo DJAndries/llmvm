@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
 use llmvm_protocol::stdio::{CoreRequest, CoreResponse, StdioClient};
 use lsp_types::{
@@ -6,16 +8,19 @@ use lsp_types::{
     InitializeParams, InitializeResult, Url,
 };
 use serde_json::Value;
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, Mutex},
+    task::JoinHandle,
+};
 use tower::{buffer::Buffer, timeout::Timeout};
 use tracing::{debug, error};
 
 use crate::{
     complete::CodeCompleteTask,
+    content::ContentManager,
     jsonrpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse},
     lsp::{CodeCompleteParams, LspMessage, CODE_COMPLETE_COMMAND_ID},
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
-    snippet::SnippetFetcher,
 };
 
 const CORE_SERVICE_REQUEST_BOUND: usize = 32;
@@ -30,6 +35,8 @@ pub struct LspInterceptor {
 
     root_uri: Option<Url>,
     complete_task_last_id: usize,
+
+    content_manager: Arc<Mutex<ContentManager>>,
 }
 
 impl LspInterceptor {
@@ -45,6 +52,7 @@ impl LspInterceptor {
             llmvm_core_service: Buffer::new(llmvm_core_service, CORE_SERVICE_REQUEST_BOUND),
             root_uri: None,
             complete_task_last_id: 0,
+            content_manager: Default::default(),
         }
     }
 
@@ -56,13 +64,13 @@ impl LspInterceptor {
         )
     }
 
-    fn inspect_initialize_request(&mut self, message: &LspMessage) -> Result<()> {
-        let mut request = message.get_request_params::<InitializeParams>()?;
+    fn inspect_initialize_request(&mut self, message: &LspMessage) -> Result<Option<LspMessage>> {
+        let mut request = message.get_params::<InitializeParams>()?;
         self.root_uri = request.root_uri;
-        Ok(())
+        Ok(None)
     }
 
-    fn transform_initialize_response(message: &LspMessage) -> Result<LspMessage> {
+    fn transform_initialize_response(message: &LspMessage) -> Result<Option<LspMessage>> {
         let mut result = message.get_result::<InitializeResult>()?;
         let command_options = result
             .capabilities
@@ -73,13 +81,13 @@ impl LspInterceptor {
             .push(CODE_COMPLETE_COMMAND_ID.to_string());
         let mut message = message.clone();
         message.set_result(result)?;
-        Ok(message)
+        Ok(Some(message))
     }
 
     fn transform_code_action_response(
         origin_request: &JsonRpcRequest,
         message: &LspMessage,
-    ) -> Result<LspMessage> {
+    ) -> Result<Option<LspMessage>> {
         let request_params = serde_json::from_value::<CodeActionParams>(
             origin_request
                 .params
@@ -97,14 +105,15 @@ impl LspInterceptor {
         }));
         let mut message = message.clone();
         message.set_result(result)?;
-        Ok(message)
+        Ok(Some(message))
     }
 
     fn handle_code_complete_command(&mut self, message: &LspMessage) -> Result<Option<Value>> {
-        let mut params = message.get_request_params::<ExecuteCommandParams>()?;
+        let mut params = message.get_params::<ExecuteCommandParams>()?;
         let llmvm_core_service = self.llmvm_core_service.clone();
         let passthrough_service = self.passthrough_service.clone();
         let root_uri = self.root_uri.clone();
+        let content_manager = self.content_manager.clone();
         let code_complete_params = serde_json::from_value(params.arguments.pop().ok_or(
             anyhow!("code complete params must be specified with request"),
         )?)?;
@@ -115,6 +124,7 @@ impl LspInterceptor {
                 llmvm_core_service,
                 passthrough_service,
                 root_uri,
+                content_manager,
                 code_complete_params,
                 task_id,
             );
@@ -125,44 +135,54 @@ impl LspInterceptor {
         Ok(None)
     }
 
-    fn handle_intercept(&mut self, msg_info: LspMessageInfo) -> LspMessage {
-        let result_option = match msg_info.origin_request {
+    async fn handle_doc_sync_notification(
+        &self,
+        message: &LspMessage,
+    ) -> Result<Option<LspMessage>> {
+        self.content_manager
+            .lock()
+            .await
+            .handle_doc_sync_notification(message)?;
+        Ok(None)
+    }
+
+    async fn handle_intercept(&mut self, msg_info: LspMessageInfo) -> Option<LspMessage> {
+        let result = match msg_info.origin_request {
             Some(origin_request) => match origin_request.method.as_str() {
-                CodeActionRequest::METHOD => Some(Self::transform_code_action_response(
-                    &origin_request,
-                    &msg_info.message,
-                )),
-                Initialize::METHOD => Some(Self::transform_initialize_response(&msg_info.message)),
-                _ => None,
+                CodeActionRequest::METHOD => {
+                    Self::transform_code_action_response(&origin_request, &msg_info.message)
+                }
+                Initialize::METHOD => Self::transform_initialize_response(&msg_info.message),
+                _ => Ok(None),
             },
             None => match &msg_info.message.payload {
                 JsonRpcMessage::Request(req) => match req.method.as_str() {
-                    ExecuteCommand::METHOD => Some(Ok(LspMessage::new_response::<ExecuteCommand>(
+                    ExecuteCommand::METHOD => Ok(Some(LspMessage::new_response::<ExecuteCommand>(
                         self.handle_code_complete_command(&msg_info.message),
                         req.id.clone(),
                     ))),
-                    Initialize::METHOD => {
-                        self.inspect_initialize_request(&msg_info.message).ok();
-                        None
-                    }
-                    _ => None,
+                    Initialize::METHOD => self.inspect_initialize_request(&msg_info.message),
+                    _ => Ok(None),
                 },
-                _ => None,
+                JsonRpcMessage::Notification(_) => {
+                    self.handle_doc_sync_notification(&msg_info.message).await
+                }
+                _ => Ok(None),
             },
         };
-        if let Some(result) = result_option {
-            match result {
-                Ok(message) => return message,
-                Err(e) => error!("intercept failed: {}", e),
+        match result {
+            Ok(new_message) => new_message,
+            Err(e) => {
+                error!("intercept failed: {}", e);
+                None
             }
         }
-        msg_info.message
     }
 
     pub async fn run(&mut self) {
         while let Some((msg_info, resp_tx)) = self.service_rx.recv().await {
             resp_tx
-                .send(Some(self.handle_intercept(msg_info)))
+                .send(self.handle_intercept(msg_info).await)
                 .expect("tried to send response back to caller");
         }
     }

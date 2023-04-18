@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     hash::{Hash, Hasher},
+    sync::Arc,
 };
 
 use anyhow::{anyhow, bail, Result};
@@ -25,13 +26,14 @@ use lsp_types::{
     WorkDoneProgressReport, WorkspaceEdit,
 };
 use serde::Serialize;
+use tokio::sync::Mutex;
 use tower::{buffer::Buffer, timeout::Timeout, util::Ready, Service, ServiceExt};
 use tracing::debug;
 
 use crate::{
+    content::ContentManager,
     lsp::{CodeCompleteParams, LspMessage},
     service::{LspMessageInfo, LspMessageService},
-    snippet::SnippetFetcher,
 };
 
 const PROGRESS_TOKEN_PREFIX: &str = "llmvm/complete/";
@@ -89,7 +91,7 @@ pub struct CodeCompleteTask {
     passthrough_service: LspMessageService,
     root_uri: Option<Url>,
 
-    snippet_fetcher: SnippetFetcher,
+    content_manager: Arc<Mutex<ContentManager>>,
     code_complete_params: CodeCompleteParams,
 
     task_id: usize,
@@ -101,6 +103,7 @@ impl CodeCompleteTask {
         llmvm_core_service: Buffer<Timeout<StdioClient<CoreRequest, CoreResponse>>, CoreRequest>,
         passthrough_service: LspMessageService,
         root_uri: Option<Url>,
+        content_manager: Arc<Mutex<ContentManager>>,
         code_complete_params: CodeCompleteParams,
         task_id: usize,
     ) -> Self {
@@ -108,7 +111,7 @@ impl CodeCompleteTask {
             llmvm_core_service,
             passthrough_service,
             root_uri,
-            snippet_fetcher: SnippetFetcher::default(),
+            content_manager,
             code_complete_params,
             task_id,
         }
@@ -133,6 +136,7 @@ impl CodeCompleteTask {
 
         let mut result = Vec::with_capacity(symbols.data.len());
         let mut current_pos = Position::default();
+        let content_manager = self.content_manager.lock().await;
         for symbol in symbols.data {
             if symbol.delta_line != 0 {
                 current_pos.line += symbol.delta_line;
@@ -150,8 +154,7 @@ impl CodeCompleteTask {
 
                 result.push(DescribedPosition {
                     position: current_pos.clone(),
-                    description: self
-                        .snippet_fetcher
+                    description: content_manager
                         .get_snippet(&self.code_complete_params.text_document.uri, &range)
                         .ok_or(anyhow!("failed to get snippet for token"))?,
                 });
@@ -245,16 +248,15 @@ impl CodeCompleteTask {
         folding_ranges: &HashMap<Url, HashSet<SimpleFoldingRange>>,
     ) -> Result<Vec<ContextSnippet>> {
         let mut result = Vec::new();
+        let mut content_manager = self.content_manager.lock().await;
         for (location, descriptions) in typedef_locations {
-            self.snippet_fetcher
-                .load_file(location.0.uri.clone())
-                .await?;
+            content_manager.maybe_load_file(&location.0.uri).await?;
             let mut snippet_range = Range::new(
                 Position::new(location.0.range.start.line as u32, 0),
                 Position::new(location.0.range.end.line as u32, u32::MAX),
             );
             for line in
-                snippet_range.start.line as usize..self.snippet_fetcher.line_count(&location.0.uri)
+                snippet_range.start.line as usize..content_manager.line_count(&location.0.uri)
             {
                 let mut new_end_line = None;
                 if let Some(folding_ranges) = folding_ranges.get(&location.0.uri) {
@@ -266,7 +268,7 @@ impl CodeCompleteTask {
                     }
                 }
                 if new_end_line.is_none() {
-                    if let Some(line_text) = self.snippet_fetcher.get_line(&location.0.uri, line) {
+                    if let Some(line_text) = content_manager.get_line(&location.0.uri, line) {
                         if line_text.trim().is_empty() {
                             new_end_line = Some(if line > 0 { line - 1 } else { 0 });
                         }
@@ -286,8 +288,7 @@ impl CodeCompleteTask {
                 .join(", ");
             result.push(ContextSnippet {
                 descriptions,
-                snippet: self
-                    .snippet_fetcher
+                snippet: content_manager
                     .get_snippet(&location.0.uri, &snippet_range)
                     .ok_or(anyhow!("failed to get context snippet from fetcher"))?,
             });
@@ -301,7 +302,11 @@ impl CodeCompleteTask {
         main_snippet: String,
     ) -> Result<String> {
         let prompt_params = PromptParameters {
-            lang: "Rust".to_string(),
+            lang: self
+                .content_manager
+                .lock()
+                .await
+                .get_lang_id(&self.code_complete_params.text_document.uri),
             typedef_context_snippets: context_snippets,
             main_snippet,
         };
@@ -423,8 +428,10 @@ impl CodeCompleteTask {
     pub async fn run(mut self) -> Result<()> {
         let progress_token = self.create_progress_token().await?;
 
-        self.snippet_fetcher
-            .load_file(self.code_complete_params.text_document.uri.clone())
+        self.content_manager
+            .lock()
+            .await
+            .maybe_load_file(&self.code_complete_params.text_document.uri)
             .await?;
 
         let symbols = self.get_relevant_symbol_positions().await?;
@@ -438,7 +445,9 @@ impl CodeCompleteTask {
             .await?;
 
         let main_snippet = self
-            .snippet_fetcher
+            .content_manager
+            .lock()
+            .await
             .get_snippet(
                 &self.code_complete_params.text_document.uri,
                 &self.code_complete_params.range,

@@ -10,7 +10,9 @@ use std::{
 use anyhow::Result;
 use llmvm_protocol::tower::Service;
 use lsp_types::{
-    notification::{Exit, Notification},
+    notification::{
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Notification,
+    },
     request::{CodeActionRequest, ExecuteCommand, Initialize, Request},
     ExecuteCommandParams,
 };
@@ -95,9 +97,10 @@ impl LspStdioPassthrough {
 
     async fn maybe_intercept(
         &mut self,
-        message: LspMessage,
-        to_real_server: bool,
+        mut message: LspMessage,
+        mut to_real_server: bool,
     ) -> Result<(Option<LspMessageInfo>, bool)> {
+        let mut should_exit = false;
         match &message.payload {
             JsonRpcMessage::Response(resp) => {
                 if let Some(resp_tx) = self.pending_interceptor_calls.remove(&resp.id.to_string()) {
@@ -116,11 +119,8 @@ impl LspStdioPassthrough {
                             to_real_server,
                             origin_request: Some(origin_request),
                         };
-                        if let Ok(new_msg) = service.call(msg_info).await {
-                            return Ok((
-                                new_msg.map(|m| LspMessageInfo::new(m, to_real_server)),
-                                false,
-                            ));
+                        if let Some(new_msg) = service.call(msg_info).await? {
+                            message = new_msg;
                         }
                     }
                 }
@@ -153,11 +153,10 @@ impl LspStdioPassthrough {
                                         to_real_server,
                                         origin_request: None,
                                     };
-                                    let new_msg = service.call(msg_info).await?;
-                                    return Ok((
-                                        new_msg.map(|m| LspMessageInfo::new(m, false)),
-                                        false,
-                                    ));
+                                    if let Some(new_msg) = service.call(msg_info).await? {
+                                        message = new_msg;
+                                        to_real_server = false;
+                                    }
                                 }
                             }
                         }
@@ -166,13 +165,29 @@ impl LspStdioPassthrough {
                 };
             }
             JsonRpcMessage::Notification(notification) => match notification.method.as_str() {
+                DidOpenTextDocument::METHOD
+                | DidChangeTextDocument::METHOD
+                | DidCloseTextDocument::METHOD => {
+                    if let Some(service) = self.interceptor_service.as_mut() {
+                        service
+                            .call(LspMessageInfo {
+                                message: message.clone(),
+                                to_real_server,
+                                origin_request: None,
+                            })
+                            .await?;
+                    }
+                }
                 Exit::METHOD => {
-                    return Ok((Some(LspMessageInfo::new(message, to_real_server)), true))
+                    should_exit = true;
                 }
                 _ => (),
             },
         };
-        Ok((Some(LspMessageInfo::new(message, to_real_server)), false))
+        Ok((
+            Some(LspMessageInfo::new(message, to_real_server)),
+            should_exit,
+        ))
     }
 
     async fn send_message(

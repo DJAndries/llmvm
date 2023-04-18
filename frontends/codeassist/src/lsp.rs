@@ -74,17 +74,22 @@ impl LspMessage {
         Ok(())
     }
 
-    pub fn get_request_params<R: DeserializeOwned>(&self) -> Result<R> {
-        Ok(match &self.payload {
-            JsonRpcMessage::Request(req) => {
-                let result = req
-                    .params
-                    .as_ref()
-                    .ok_or(anyhow!("expected params in lsp message request"))?;
-                serde_json::from_value(result.clone())?
-            }
-            _ => bail!("payload should include request when converting lsp message to params"),
-        })
+    pub fn get_params<R: DeserializeOwned>(&self) -> Result<R> {
+        let params = match &self.payload {
+            JsonRpcMessage::Request(req) => req
+                .params
+                .as_ref()
+                .ok_or(anyhow!("expected params in lsp message request"))?
+                .clone(),
+            JsonRpcMessage::Notification(notification) => notification
+                .params
+                .as_ref()
+                .ok_or(anyhow!("expected params in lsp message notification"))?
+                .clone(),
+            _ => bail!("payload is not request or notification when getting lsp message params"),
+        };
+
+        Ok(serde_json::from_value(params)?)
     }
 }
 

@@ -41,7 +41,7 @@ impl ProtocolError {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     System,
@@ -49,7 +49,7 @@ pub enum MessageRole {
     Assistant,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: MessageRole,
     pub content: String,
