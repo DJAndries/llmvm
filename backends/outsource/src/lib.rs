@@ -9,8 +9,10 @@ use llmvm_protocol::{
     ProtocolError, ProtocolErrorType,
 };
 use reqwest::StatusCode;
+use serde::Deserialize;
 use strum_macros::{Display, EnumString};
 use thiserror::Error;
+use util::get_api_key;
 
 pub type Result<T> = std::result::Result<T, OutsourceError>;
 
@@ -64,13 +66,19 @@ impl Into<ProtocolError> for OutsourceError {
     }
 }
 
+#[derive(Deserialize)]
+pub struct OutsourceConfig {
+    pub openai_api_key: Option<String>,
+    pub huggingface_api_key: Option<String>,
+}
+
 pub struct OutsourceBackend {
-    specified_api_key: Option<String>,
+    config: OutsourceConfig,
 }
 
 impl OutsourceBackend {
-    pub fn new(specified_api_key: Option<String>) -> Self {
-        Self { specified_api_key }
+    pub fn new(config: OutsourceConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -89,18 +97,26 @@ impl Backend for OutsourceBackend {
                 })?;
             match provider {
                 Provider::OpenAIText => {
-                    openai::generate(request, model_description, self.specified_api_key.clone())
-                        .await
+                    openai::generate(
+                        request,
+                        model_description,
+                        get_api_key(self.config.openai_api_key.as_ref())?,
+                    )
+                    .await
                 }
                 Provider::OpenAIChat => {
-                    openai::generate(request, model_description, self.specified_api_key.clone())
-                        .await
+                    openai::generate(
+                        request,
+                        model_description,
+                        get_api_key(self.config.openai_api_key.as_ref())?,
+                    )
+                    .await
                 }
                 Provider::HuggingFaceText => {
                     huggingface::generate(
                         request,
                         model_description,
-                        self.specified_api_key.clone(),
+                        get_api_key(self.config.huggingface_api_key.as_ref())?,
                     )
                     .await
                 }

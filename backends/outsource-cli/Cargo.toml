@@ -8,4 +8,5 @@ clap = { version = "4.1", features = ["derive"] }
 llmvm-backend-util = { path = "../util" }
 llmvm-outsource = { path = "../outsource" }
 llmvm-protocol = { path = "../../protocol" }
+llmvm-util = { path = "../../util", features = ["config"] }
 tokio = { version = "1.26", features = ["rt", "macros", "net"] }

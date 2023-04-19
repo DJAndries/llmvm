@@ -1,6 +1,5 @@
 mod util;
 
-use directories::ProjectDirs;
 use handlebars::{
     Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext, RenderError,
     Renderable, StringOutput,
@@ -12,6 +11,7 @@ use llmvm_protocol::{
     Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
     GenerationResponse, Message, MessageRole, ModelDescription, ProtocolError, ProtocolErrorType,
 };
+use llmvm_util::DirType;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,13 +31,10 @@ use thiserror::Error;
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info};
-use util::{
-    current_timestamp_secs, get_presets_path, get_project_dirs, get_prompts_path, get_threads_path,
-};
+use util::{current_timestamp_secs, get_data_path};
 
 const BACKEND_COMMAND_PREFIX: &str = "llmvm-";
 const BACKEND_COMMAND_SUFFIX: &str = "-cli";
-const BACKEND_BIN_PATH_ENV_KEY: &str = "BACKEND_BIN_PATH";
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
@@ -45,6 +42,8 @@ pub type Result<T> = std::result::Result<T, CoreError>;
 pub enum CoreError {
     #[error("io error: {0}")]
     IO(#[from] std::io::Error),
+    #[error("failed to start backend: {0}")]
+    BackendStart(std::io::Error),
     #[error("template not found")]
     TemplateNotFound,
     #[error("utf8 error: {0}")]
@@ -71,6 +70,7 @@ impl Into<ProtocolError> for CoreError {
     fn into(self) -> ProtocolError {
         let error_type = match &self {
             CoreError::IO(_) => ProtocolErrorType::Internal,
+            CoreError::BackendStart(_) => ProtocolErrorType::Internal,
             CoreError::TemplateNotFound => ProtocolErrorType::BadRequest,
             CoreError::Utf8Error(_) => ProtocolErrorType::BadRequest,
             CoreError::UserHomeNotFound => ProtocolErrorType::Internal,
@@ -80,7 +80,7 @@ impl Into<ProtocolError> for CoreError {
             CoreError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
             CoreError::BackendStdio(error) => error.error_type.clone(),
             CoreError::Protocol(error) => error.error_type.clone(),
-            CoreError::TemplateRender(error) => ProtocolErrorType::BadRequest,
+            CoreError::TemplateRender(_) => ProtocolErrorType::BadRequest,
         };
         ProtocolError {
             error_type,
@@ -138,7 +138,7 @@ pub struct ReadyPrompt {
 impl ReadyPrompt {
     async fn load_template(template_id: &str) -> Result<String> {
         let template_file_name = format!("{}.hbs", template_id);
-        let template_path = get_prompts_path()?.join(&template_file_name);
+        let template_path = get_data_path(DirType::Prompts)?.join(&template_file_name);
         if fs::try_exists(&template_path).await.unwrap_or_default() {
             return Ok(fs::read_to_string(template_path).await?);
         };
@@ -198,7 +198,7 @@ impl ReadyPrompt {
 
 pub async fn load_preset(preset_id: &str) -> Result<HashMap<String, Value>> {
     let preset_file_name = format!("{}.json", preset_id);
-    let preset_path = get_presets_path()?.join(&preset_file_name);
+    let preset_path = get_data_path(DirType::Presets)?.join(&preset_file_name);
     if !fs::try_exists(&preset_path).await.unwrap_or_default() {
         return Err(CoreError::PresetNotFound);
     }
@@ -223,7 +223,7 @@ impl GenerationThreadManager {
     pub async fn new() -> Result<Self> {
         let mut new_self = Self {
             meta: None,
-            threads_path: get_threads_path()?,
+            threads_path: get_data_path(DirType::Threads)?,
         };
         let meta_path = new_self.meta_path();
         if !fs::try_exists(&meta_path).await.unwrap_or_default() {
@@ -282,8 +282,6 @@ impl GenerationThreadManager {
     }
 
     pub async fn new_thread_id(&mut self) -> Result<u64> {
-        fs::create_dir_all(&self.threads_path).await?;
-
         let meta = self.meta.get_or_insert_with(|| Default::default());
 
         let new_id = meta.last_id + 1;
@@ -329,14 +327,16 @@ pub struct LLMVMCore {
     stdio_clients:
         Mutex<HashMap<String, Arc<Mutex<Timeout<StdioClient<BackendRequest, BackendResponse>>>>>>,
     raw_clients: Mutex<HashMap<String, Arc<Mutex<Box<dyn Backend>>>>>,
+    backend_bin_path: Option<String>,
 }
 
 impl LLMVMCore {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(backend_bin_path: Option<String>) -> Result<Self> {
         Ok(Self {
             thread_manager: Mutex::new(GenerationThreadManager::new().await?),
             stdio_clients: Mutex::new(HashMap::new()),
             raw_clients: Mutex::new(HashMap::new()),
+            backend_bin_path,
         })
     }
 
@@ -354,7 +354,15 @@ impl LLMVMCore {
             None => {
                 stdio_clients_guard.insert(
                     request.model.to_string(),
-                    Arc::new(Mutex::new(StdioClient::new(&command, &[]).await?)),
+                    Arc::new(Mutex::new(
+                        StdioClient::new(
+                            self.backend_bin_path.as_ref().map(|v| v.as_str()),
+                            &command,
+                            &[],
+                        )
+                        .await
+                        .map_err(|e| CoreError::BackendStart(e))?,
+                    )),
                 );
                 stdio_clients_guard.get(&request.model).unwrap()
             }

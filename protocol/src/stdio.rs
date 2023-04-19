@@ -3,7 +3,7 @@ use std::{
     error::Error,
     future::Future,
     marker::PhantomData,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     process::Stdio,
     sync::Arc,
@@ -276,13 +276,29 @@ where
     Request: Serialize + DeserializeOwned,
     Response: Serialize + DeserializeOwned,
 {
-    pub async fn new(program: &str, args: &[String]) -> std::io::Result<Timeout<Self>> {
-        let mut child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
+    pub async fn new(
+        bin_path: Option<&str>,
+        program: &str,
+        args: &[String],
+    ) -> std::io::Result<Timeout<Self>> {
+        let program_with_bin_path = bin_path.map(|bin_path| {
+            Path::new(bin_path)
+                .join(program)
+                .to_str()
+                .expect("command name with bin path should convert to string")
+                .to_string()
+        });
+        let mut child = Command::new(
+            program_with_bin_path
+                .as_ref()
+                .map(|v| v.as_str())
+                .unwrap_or(program),
+        )
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         Ok(Timeout::new(

@@ -6,12 +6,14 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use interceptor::LspInterceptor;
 use llmvm_protocol::stdio::StdioClient;
+use llmvm_util::config::load_config;
+use llmvm_util::logging::setup_subscriber;
 use passthrough::LspStdioPassthrough;
+use serde::Deserialize;
 use tokio::{
     io::{stdin, stdout},
     process::Command,
 };
-use tracing_subscriber::EnvFilter;
 
 mod complete;
 mod content;
@@ -22,14 +24,30 @@ mod passthrough;
 mod service;
 
 const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
+const CONFIG_FILENAME: &str = "codeassist.toml";
+const LOG_FILENAME: &str = "codeassist.log";
+
+#[derive(Deserialize)]
+pub struct CodeAssistConfig {
+    tracing_directive: Option<String>,
+
+    bin_path: Option<String>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // TODO: consider writing logs to file
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
-        .init();
+    let config: CodeAssistConfig = match load_config(CONFIG_FILENAME) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("failed to load config: {}", e);
+            exit(1);
+        }
+    };
+
+    setup_subscriber(
+        config.tracing_directive.as_ref().map(|d| d.as_str()),
+        Some(LOG_FILENAME),
+    );
 
     let args: Vec<String> = env::args().collect();
 
@@ -54,9 +72,13 @@ async fn main() -> Result<()> {
         child.stdout.take().unwrap(),
     );
 
-    let llmvm_core_service = StdioClient::new(LLMVM_CORE_CLI_COMMAND, &[])
-        .await
-        .context("failed to start llmvm-core-cli")?;
+    let llmvm_core_service = StdioClient::new(
+        config.bin_path.as_ref().map(|d| d.as_ref()),
+        LLMVM_CORE_CLI_COMMAND,
+        &["--log-to-file".to_string()],
+    )
+    .await
+    .context("failed to start llmvm-core-cli")?;
 
     let mut interceptor = LspInterceptor::new(passthrough.get_service(), llmvm_core_service);
 

@@ -5,11 +5,9 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::util::{check_status_code, get_host_and_api_key};
+use crate::util::check_status_code;
 use crate::{OutsourceError, Result};
 
-const HUGGINGFACE_API_KEY_ENV_KEY: &str = "HUGGINGFACE_API_KEY";
-const HUGGINGFACE_API_HOST_ENV_KEY: &str = "HUGGINGFACE_API_HOST";
 const DEFAULT_HUGGINGFACE_API_HOST: &str = "https://api-inference.huggingface.co";
 
 const CUSTOM_ENDPOINT_PREFIX: &str = "endpoint=";
@@ -33,15 +31,8 @@ struct ModelResponse {
 pub async fn generate(
     mut request: BackendGenerationRequest,
     model_description: ModelDescription,
-    specified_api_key: Option<String>,
+    api_key: &str,
 ) -> Result<BackendGenerationResponse> {
-    let (host, api_key) = get_host_and_api_key(
-        HUGGINGFACE_API_KEY_ENV_KEY,
-        specified_api_key,
-        HUGGINGFACE_API_HOST_ENV_KEY,
-        DEFAULT_HUGGINGFACE_API_HOST,
-    )?;
-
     let url = if model_description
         .model_name
         .starts_with(CUSTOM_ENDPOINT_PREFIX)
@@ -49,7 +40,9 @@ pub async fn generate(
         Url::parse(&model_description.model_name[CUSTOM_ENDPOINT_PREFIX.len()..])
             .map_err(|_| OutsourceError::HostURLParse)?
     } else {
-        host.join(MODELS_ENDPOINT)
+        Url::parse(DEFAULT_HUGGINGFACE_API_HOST)
+            .expect("url should parse")
+            .join(MODELS_ENDPOINT)
             .unwrap()
             .join(&model_description.model_name)
             .unwrap()

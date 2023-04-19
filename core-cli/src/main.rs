@@ -1,4 +1,4 @@
-use std::{collections::HashMap, process::exit, sync::Arc};
+use std::{process::exit, sync::Arc};
 
 use clap::{arg, command, Args, Parser, Subcommand};
 use llmvm_core::LLMVMCore;
@@ -6,13 +6,21 @@ use llmvm_protocol::{
     stdio::{CoreService, StdioServer},
     Core, GenerationRequest,
 };
-use tracing_subscriber::EnvFilter;
+use llmvm_util::config::load_config;
+use llmvm_util::logging::setup_subscriber;
+use serde::Deserialize;
+
+const CONFIG_FILENAME: &str = "core.toml";
+const LOG_FILENAME: &str = "core.log";
 
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<CoreCommand>,
+
+    #[arg(long)]
+    log_to_file: bool,
 }
 
 #[derive(Subcommand)]
@@ -41,16 +49,35 @@ pub struct GenerateArgs {
     max_tokens: u64,
 }
 
+#[derive(Deserialize)]
+pub struct CliConfigContent {
+    tracing_directive: Option<String>,
+
+    bin_path: Option<String>,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_writer(std::io::stderr)
-        .init();
+    let config: CliConfigContent = match load_config(CONFIG_FILENAME) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("failed to load config: {}", e);
+            exit(1);
+        }
+    };
 
     let cli = Cli::parse();
 
-    let core = Arc::new(match LLMVMCore::new().await {
+    setup_subscriber(
+        config.tracing_directive.as_ref().map(|d| d.as_str()),
+        if cli.log_to_file {
+            Some(LOG_FILENAME)
+        } else {
+            None
+        },
+    );
+
+    let core = Arc::new(match LLMVMCore::new(config.bin_path).await {
         Ok(core) => core,
         Err(e) => {
             eprintln!("failed to init core: {}", e);
