@@ -1,9 +1,7 @@
-use std::collections::HashMap;
-
 use llmvm_protocol::{BackendGenerationRequest, BackendGenerationResponse, ModelDescription};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::util::check_status_code;
 use crate::{OutsourceError, Result};
@@ -20,7 +18,7 @@ const RETURN_FULL_KEY: &str = "return_full_text";
 #[derive(Serialize)]
 struct ModelRequest {
     inputs: String,
-    parameters: HashMap<String, Value>,
+    parameters: Map<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -48,15 +46,15 @@ pub async fn generate(
             .unwrap()
     };
 
-    let mut body = ModelRequest {
-        inputs: request.prompt,
-        parameters: request.model_parameters.take().unwrap_or_default(),
-    };
+    let mut parameters = request.model_parameters.take().unwrap_or_default();
 
-    body.parameters
-        .insert(MAX_TOKENS_KEY.to_string(), request.max_tokens.into());
-    body.parameters
-        .insert(RETURN_FULL_KEY.to_string(), false.into());
+    parameters.insert(MAX_TOKENS_KEY.to_string(), request.max_tokens.into());
+    parameters.insert(RETURN_FULL_KEY.to_string(), false.into());
+
+    let body = ModelRequest {
+        inputs: request.prompt,
+        parameters,
+    };
 
     let client = Client::new();
     let response = client

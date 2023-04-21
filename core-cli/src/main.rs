@@ -17,7 +17,7 @@ const LOG_FILENAME: &str = "core.log";
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
-    command: Option<CoreCommand>,
+    command: CoreCommand,
 
     #[arg(long)]
     log_to_file: bool,
@@ -26,6 +26,8 @@ struct Cli {
 #[derive(Subcommand)]
 pub enum CoreCommand {
     Generate(GenerateArgs),
+    StdioServer,
+    InitProject,
 }
 
 #[derive(Args, Clone)]
@@ -86,36 +88,43 @@ async fn main() -> std::io::Result<()> {
     });
 
     match cli.command {
-        Some(command) => match command {
-            CoreCommand::Generate(args) => {
-                let request = GenerationRequest {
-                    model: args.model,
-                    prompt_template_id: None,
-                    custom_prompt_template: Some(args.prompt),
-                    max_tokens: args.max_tokens,
-                    model_parameters_preset_id: args.model_parameters_preset_id,
-                    model_parameters: None,
-                    prompt_parameters: Default::default(),
-                    existing_thread_id: args.existing_thread_id,
-                    save_thread: args.save_thread,
-                };
-                match core.generate(request).await {
-                    Err(e) => {
-                        eprintln!("failed to generate: {}", e);
-                        exit(1);
-                    }
-                    Ok(response) => {
-                        println!("{}", response.response);
-                        if let Some(id) = response.thread_id {
-                            eprintln!("Thread ID is {}", id);
-                        }
+        CoreCommand::Generate(args) => {
+            let request = GenerationRequest {
+                model: args.model,
+                prompt_template_id: None,
+                custom_prompt_template: Some(args.prompt),
+                max_tokens: args.max_tokens,
+                model_parameters_preset_id: args.model_parameters_preset_id,
+                model_parameters: None,
+                prompt_parameters: Default::default(),
+                existing_thread_id: args.existing_thread_id,
+                save_thread: args.save_thread,
+            };
+            match core.generate(request).await {
+                Err(e) => {
+                    eprintln!("failed to generate: {}", e);
+                    exit(1);
+                }
+                Ok(response) => {
+                    println!("{}", response.response);
+                    if let Some(id) = response.thread_id {
+                        eprintln!("Thread ID is {}", id);
                     }
                 }
             }
-        },
-        None => {
+        }
+        CoreCommand::StdioServer => {
             StdioServer::new(CoreService::new(core)).run().await?;
         }
+        CoreCommand::InitProject => match core.init_project() {
+            Err(e) => {
+                eprintln!("failed to generate: {}", e);
+                exit(1);
+            }
+            Ok(_) => {
+                eprintln!("initialized project in current folder");
+            }
+        },
     };
     Ok(())
 }

@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
     let llmvm_core_service = StdioClient::new(
         config.bin_path.as_ref().map(|d| d.as_ref()),
         LLMVM_CORE_CLI_COMMAND,
-        &["--log-to-file".to_string()],
+        &["--log-to-file".to_string(), "stdio-server".to_string()],
     )
     .await
     .context("failed to start llmvm-core-cli")?;

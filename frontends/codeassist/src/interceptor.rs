@@ -5,7 +5,7 @@ use llmvm_protocol::stdio::{CoreRequest, CoreResponse, StdioClient};
 use lsp_types::{
     request::{CodeActionRequest, ExecuteCommand, Initialize, Request},
     CodeActionOrCommand, CodeActionParams, CodeActionResponse, Command, ExecuteCommandParams,
-    InitializeParams, InitializeResult, Url,
+    InitializeParams, InitializeResult, Range, Url,
 };
 use serde_json::Value;
 use tokio::{
@@ -37,6 +37,8 @@ pub struct LspInterceptor {
     complete_task_last_id: usize,
 
     content_manager: Arc<Mutex<ContentManager>>,
+
+    queued_context_ranges: Vec<Range>,
 }
 
 impl LspInterceptor {
@@ -53,6 +55,7 @@ impl LspInterceptor {
             root_uri: None,
             complete_task_last_id: 0,
             content_manager: Default::default(),
+            queued_context_ranges: Default::default(),
         }
     }
 
@@ -65,7 +68,7 @@ impl LspInterceptor {
     }
 
     fn inspect_initialize_request(&mut self, message: &LspMessage) -> Result<Option<LspMessage>> {
-        let mut request = message.get_params::<InitializeParams>()?;
+        let request = message.get_params::<InitializeParams>()?;
         self.root_uri = request.root_uri;
         Ok(None)
     }

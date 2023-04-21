@@ -7,9 +7,8 @@ pub use tower;
 pub use async_trait::async_trait;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::{
-    collections::HashMap,
     error::Error,
     fmt::{Display, Formatter},
     str::FromStr,
@@ -72,36 +71,38 @@ pub trait Core: Send + Sync {
         &self,
         request: GenerationRequest,
     ) -> Result<GenerationResponse, ProtocolError>;
+
+    fn init_project(&self) -> Result<(), ProtocolError>;
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BackendGenerationRequest {
     pub model: String,
     pub prompt: String,
     pub max_tokens: u64,
     pub thread_messages: Option<Vec<Message>>,
-    pub model_parameters: Option<HashMap<String, Value>>,
+    pub model_parameters: Option<Map<String, Value>>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendGenerationResponse {
     pub response: String,
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GenerationRequest {
     pub model: String,
     pub prompt_template_id: Option<String>,
     pub custom_prompt_template: Option<String>,
     pub max_tokens: u64,
-    pub model_parameters: Option<HashMap<String, Value>>,
+    pub model_parameters: Option<Map<String, Value>>,
     pub model_parameters_preset_id: Option<String>,
     pub prompt_parameters: Value,
     pub existing_thread_id: Option<u64>,
     pub save_thread: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationResponse {
     pub response: String,
     pub thread_id: Option<u64>,

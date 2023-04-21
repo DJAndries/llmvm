@@ -1,4 +1,4 @@
-use std::{fmt::Display, fs::create_dir_all, path::PathBuf};
+use std::{env::current_dir, fmt::Display, fs::create_dir_all, path::PathBuf};
 
 use directories::ProjectDirs;
 
@@ -6,12 +6,18 @@ const PROMPTS_DIR: &str = "prompts";
 const PRESETS_DIR: &str = "presets";
 const THREADS_DIR: &str = "threads";
 const LOGS_DIR: &str = "logs";
+const CONFIG_DIR: &str = "config";
+const WEIGHTS_DIR: &str = "weights";
+
+pub const PROJECT_DIR_NAME: &str = ".llmvm";
 
 pub enum DirType {
     Prompts,
     Presets,
     Threads,
     Logs,
+    Config,
+    Weights,
 }
 
 impl Display for DirType {
@@ -24,28 +30,42 @@ impl Display for DirType {
                 DirType::Presets => PRESETS_DIR,
                 DirType::Threads => THREADS_DIR,
                 DirType::Logs => LOGS_DIR,
+                DirType::Config => CONFIG_DIR,
+                DirType::Weights => WEIGHTS_DIR,
             }
         )
     }
 }
 
-pub fn get_project_dirs() -> Option<ProjectDirs> {
+pub fn get_home_dirs() -> Option<ProjectDirs> {
     ProjectDirs::from("com", "djandries", "llmvm")
 }
 
-pub fn get_data_path(dir_type: DirType) -> Option<PathBuf> {
-    get_project_dirs().map(|p| {
-        let path = p.data_dir().join(dir_type.to_string());
-        create_dir_all(&path).ok();
-        path
-    })
+pub fn get_project_dir() -> Option<PathBuf> {
+    current_dir().ok().map(|p| p.join(PROJECT_DIR_NAME))
 }
 
-pub fn get_config_path() -> Option<PathBuf> {
-    get_project_dirs().map(|p| {
-        let path = p.config_dir().into();
-        create_dir_all(&path).ok();
-        path
+pub fn get_file_path(dir_type: DirType, filename: &str, will_create: bool) -> Option<PathBuf> {
+    // Check for project file path, if it exists or if creating new file
+    let project_dir = get_project_dir();
+    if let Some(project_dir) = project_dir {
+        if project_dir.exists() {
+            let type_dir = project_dir.join(dir_type.to_string());
+            create_dir_all(&type_dir).ok();
+            let file_dir = type_dir.join(filename);
+            if will_create || file_dir.exists() {
+                return Some(file_dir);
+            }
+        }
+    }
+    // Return user home file path
+    get_home_dirs().map(|p| {
+        let subdir = match dir_type {
+            DirType::Config => p.config_dir().into(),
+            _ => p.data_dir().join(dir_type.to_string()),
+        };
+        create_dir_all(&subdir).ok();
+        subdir.join(filename)
     })
 }
 
@@ -56,7 +76,7 @@ pub mod logging {
     use std::fs::OpenOptions;
     use tracing_subscriber::{filter::Directive, EnvFilter};
 
-    use super::{get_data_path, DirType};
+    use super::{get_file_path, DirType};
 
     pub fn setup_subscriber(directive: Option<&str>, log_filename: Option<&str>) {
         let subscriber_builder = tracing_subscriber::fmt().with_env_filter(
@@ -80,9 +100,8 @@ pub mod logging {
                             .truncate(true)
                             .write(true)
                             .open(
-                                get_data_path(DirType::Logs)
-                                    .expect("should be able to find log path")
-                                    .join(filename),
+                                get_file_path(DirType::Logs, filename, true)
+                                    .expect("should be able to find log path"),
                             )
                             .expect("should be able to open log file"),
                     )
@@ -97,12 +116,13 @@ pub mod config {
     use config::{Config, ConfigError, Environment, File, FileFormat};
     use serde::de::DeserializeOwned;
 
-    use super::get_config_path;
+    use crate::DirType;
+
+    use super::get_file_path;
 
     pub fn load_config<T: DeserializeOwned>(config_filename: &str) -> Result<T, ConfigError> {
-        let config_path = get_config_path()
-            .expect("should be able to find config path")
-            .join(config_filename);
+        let config_path = get_file_path(DirType::Config, config_filename, false)
+            .expect("should be able to find config path");
         Config::builder()
             .add_source(
                 File::new(

@@ -1,5 +1,7 @@
 [workspace]
 members = [
+  "./backends/llama",
+  "./backends/llama-cli",
   "./backends/outsource",
   "./backends/outsource-cli",
   "./core",

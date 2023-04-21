@@ -11,11 +11,12 @@ use llmvm_protocol::{
     Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
     GenerationResponse, Message, MessageRole, ModelDescription, ProtocolError, ProtocolErrorType,
 };
-use llmvm_util::DirType;
+use llmvm_util::{get_file_path, DirType};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::env;
+use serde_json::{Map, Value};
+use std::env::{self, current_dir};
+use std::fs::create_dir;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
@@ -31,10 +32,11 @@ use thiserror::Error;
 use tokio::fs;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info};
-use util::{current_timestamp_secs, get_data_path};
+use util::current_timestamp_secs;
 
 const BACKEND_COMMAND_PREFIX: &str = "llmvm-";
 const BACKEND_COMMAND_SUFFIX: &str = "-cli";
+const PROJECT_DIR_NAME: &str = ".llmvm";
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
@@ -138,7 +140,8 @@ pub struct ReadyPrompt {
 impl ReadyPrompt {
     async fn load_template(template_id: &str) -> Result<String> {
         let template_file_name = format!("{}.hbs", template_id);
-        let template_path = get_data_path(DirType::Prompts)?.join(&template_file_name);
+        let template_path = get_file_path(DirType::Prompts, &template_file_name, false)
+            .ok_or(CoreError::UserHomeNotFound)?;
         if fs::try_exists(&template_path).await.unwrap_or_default() {
             return Ok(fs::read_to_string(template_path).await?);
         };
@@ -196,9 +199,10 @@ impl ReadyPrompt {
     }
 }
 
-pub async fn load_preset(preset_id: &str) -> Result<HashMap<String, Value>> {
+pub async fn load_preset(preset_id: &str) -> Result<Map<String, Value>> {
     let preset_file_name = format!("{}.json", preset_id);
-    let preset_path = get_data_path(DirType::Presets)?.join(&preset_file_name);
+    let preset_path = get_file_path(DirType::Presets, &preset_file_name, false)
+        .ok_or(CoreError::UserHomeNotFound)?;
     if !fs::try_exists(&preset_path).await.unwrap_or_default() {
         return Err(CoreError::PresetNotFound);
     }
@@ -216,16 +220,13 @@ struct GenerationThreadMeta {
 
 pub struct GenerationThreadManager {
     meta: Option<GenerationThreadMeta>,
-    threads_path: PathBuf,
 }
 
 impl GenerationThreadManager {
+    // Rewrite this func to
     pub async fn new() -> Result<Self> {
-        let mut new_self = Self {
-            meta: None,
-            threads_path: get_data_path(DirType::Threads)?,
-        };
-        let meta_path = new_self.meta_path();
+        let mut new_self = Self { meta: None };
+        let meta_path = Self::meta_path()?;
         if !fs::try_exists(&meta_path).await.unwrap_or_default() {
             return Ok(new_self);
         }
@@ -233,12 +234,13 @@ impl GenerationThreadManager {
         Ok(new_self)
     }
 
-    fn meta_path(&self) -> PathBuf {
-        self.threads_path.join(META_JSON_FILENAME)
+    fn meta_path() -> Result<PathBuf> {
+        get_file_path(DirType::Threads, META_JSON_FILENAME, true).ok_or(CoreError::UserHomeNotFound)
     }
 
-    fn thread_path(&self, id: u64) -> PathBuf {
-        self.threads_path.join(format!("thread_{}.json", id))
+    fn thread_path(id: u64) -> Result<PathBuf> {
+        get_file_path(DirType::Threads, &format!("thread_{}.json", id), true)
+            .ok_or(CoreError::UserHomeNotFound)
     }
 
     fn check_thread_exists(&self, thread_id: &u64) -> Result<()> {
@@ -263,7 +265,7 @@ impl GenerationThreadManager {
                 {
                     continue;
                 }
-                if let Err(e) = fs::remove_file(&self.thread_path(*id)).await {
+                if let Err(e) = fs::remove_file(&Self::thread_path(*id)?).await {
                     match e.kind() {
                         io::ErrorKind::NotFound => (),
                         _ => return Err(e.into()),
@@ -276,7 +278,7 @@ impl GenerationThreadManager {
                 meta.thread_ids_to_timestamps.remove(&id);
             }
             let meta_json = serde_json::to_vec(meta)?;
-            fs::write(self.meta_path(), meta_json).await?;
+            fs::write(Self::meta_path()?, meta_json).await?;
         }
         Ok(())
     }
@@ -290,15 +292,15 @@ impl GenerationThreadManager {
             .insert(new_id, current_timestamp_secs());
 
         let meta_json = serde_json::to_vec(meta)?;
-        fs::write(self.meta_path(), meta_json).await?;
-        fs::write(self.thread_path(new_id), "[]").await?;
+        fs::write(Self::meta_path()?, meta_json).await?;
+        fs::write(Self::thread_path(new_id)?, "[]").await?;
 
         Ok(new_id)
     }
 
     pub async fn save_thread(&self, thread_id: u64, messages: Vec<Message>) -> Result<()> {
         self.check_thread_exists(&thread_id)?;
-        let thread_path = self.thread_path(thread_id);
+        let thread_path = Self::thread_path(thread_id)?;
 
         fs::write(thread_path, serde_json::to_vec(&messages)?).await?;
         Ok(())
@@ -306,7 +308,7 @@ impl GenerationThreadManager {
 
     pub async fn get_thread_messages(&self, thread_id: u64) -> Result<Vec<Message>> {
         self.check_thread_exists(&thread_id)?;
-        let thread_path = self.thread_path(thread_id);
+        let thread_path = Self::thread_path(thread_id)?;
         Ok(
             match fs::try_exists(&thread_path).await.unwrap_or_default() {
                 true => serde_json::from_slice(&fs::read(&thread_path).await?)?,
@@ -509,5 +511,13 @@ impl Core for LLMVMCore {
         }
         .await
         .map_err(|e| e.into())
+    }
+
+    fn init_project(&self) -> std::result::Result<(), ProtocolError> {
+        create_dir(PROJECT_DIR_NAME).map_err(|error| ProtocolError {
+            error_type: ProtocolErrorType::Internal,
+            error: Box::new(error),
+        })?;
+        Ok(())
     }
 }

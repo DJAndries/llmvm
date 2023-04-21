@@ -34,6 +34,8 @@ pub enum OutsourceError {
     NoTextInResponse,
     #[error("failed to parse model name")]
     ModelDescriptionParse,
+    #[error("model parameters should be object")]
+    ModelParamsNotObject,
 }
 
 #[derive(Display, EnumString)]
@@ -58,6 +60,7 @@ impl Into<ProtocolError> for OutsourceError {
             OutsourceError::Serialization(_) => ProtocolErrorType::Internal,
             OutsourceError::NoTextInResponse => ProtocolErrorType::Internal,
             OutsourceError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
+            OutsourceError::ModelParamsNotObject => ProtocolErrorType::BadRequest,
         };
         ProtocolError {
             error_type,

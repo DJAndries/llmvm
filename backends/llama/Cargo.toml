@@ -1,0 +1,15 @@
+[package]
+name = "llmvm-llama"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+llama-rs = { git = "https://github.com/rustformers/llama-rs", rev = "ec58e46fdee3388b92e628ac4afeb4f815902afb" }
+llmvm-protocol = { path = "../../protocol", features = ["stdio"] }
+llmvm-util = { path = "../../util" }
+thiserror = "1.0"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.27", features = ["sync"] }
+tracing = "0.1"

@@ -61,7 +61,7 @@ pub async fn generate(
         .join(endpoint)
         .unwrap();
 
-    let mut body: HashMap<String, Value> = request.model_parameters.take().unwrap_or_default();
+    let mut body = request.model_parameters.take().unwrap_or_default();
 
     body.insert(MODEL_KEY.to_string(), model_description.model_name.into());
     body.insert(MAX_TOKENS_KEY.to_string(), request.max_tokens.into());

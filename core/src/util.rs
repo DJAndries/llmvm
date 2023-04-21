@@ -12,7 +12,3 @@ pub fn current_timestamp_secs() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
-
-pub fn get_data_path(dir_type: DirType) -> Result<PathBuf> {
-    llmvm_util::get_data_path(dir_type).ok_or(CoreError::UserHomeNotFound)
-}
