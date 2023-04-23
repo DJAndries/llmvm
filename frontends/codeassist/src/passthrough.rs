@@ -33,7 +33,9 @@ use tracing::debug;
 
 use crate::{
     jsonrpc::{JsonRpcMessage, JsonRpcRequest},
-    lsp::{LspMessage, CODE_COMPLETE_COMMAND_ID, CONTENT_LENGTH_HEADER},
+    lsp::{
+        LspMessage, CODE_COMPLETE_COMMAND_ID, CONTENT_LENGTH_HEADER, MANUAL_CONTEXT_ADD_COMMAND_ID,
+    },
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
 };
 
@@ -146,7 +148,9 @@ impl LspStdioPassthrough {
                         if let Ok(execute_params) = serde_json::from_value::<ExecuteCommandParams>(
                             req.params.clone().unwrap_or_default(),
                         ) {
-                            if execute_params.command == CODE_COMPLETE_COMMAND_ID {
+                            if [CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID]
+                                .contains(&execute_params.command.as_str())
+                            {
                                 if let Some(service) = self.interceptor_service.as_mut() {
                                     let msg_info = LspMessageInfo {
                                         message: message.clone(),

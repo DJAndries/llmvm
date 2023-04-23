@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use llmvm_protocol::stdio::{CoreRequest, CoreResponse, StdioClient};
 use lsp_types::{
     request::{CodeActionRequest, ExecuteCommand, Initialize, Request},
     CodeActionOrCommand, CodeActionParams, CodeActionResponse, Command, ExecuteCommandParams,
-    InitializeParams, InitializeResult, Range, Url,
+    InitializeParams, InitializeResult, Location, Range, Url,
 };
 use serde_json::Value;
 use tokio::{
@@ -16,10 +16,10 @@ use tower::{buffer::Buffer, timeout::Timeout};
 use tracing::{debug, error};
 
 use crate::{
-    complete::CodeCompleteTask,
+    complete::{CodeCompleteTask, HashableLocation, SimpleFoldingRange},
     content::ContentManager,
     jsonrpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse},
-    lsp::{CodeCompleteParams, LspMessage, CODE_COMPLETE_COMMAND_ID},
+    lsp::{LspMessage, CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID},
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
 };
 
@@ -38,7 +38,7 @@ pub struct LspInterceptor {
 
     content_manager: Arc<Mutex<ContentManager>>,
 
-    queued_context_ranges: Vec<Range>,
+    queued_random_context_locations: HashSet<HashableLocation>,
 }
 
 impl LspInterceptor {
@@ -55,7 +55,7 @@ impl LspInterceptor {
             root_uri: None,
             complete_task_last_id: 0,
             content_manager: Default::default(),
-            queued_context_ranges: Default::default(),
+            queued_random_context_locations: Default::default(),
         }
     }
 
@@ -98,29 +98,43 @@ impl LspInterceptor {
                 .ok_or(anyhow!("code action request does not have params"))?,
         )?;
         let mut result = message.get_result::<CodeActionResponse>()?;
+        let location_args = Some(vec![serde_json::to_value(Location::new(
+            request_params.text_document.uri.clone(),
+            request_params.range,
+        ))?]);
         result.push(CodeActionOrCommand::Command(Command {
             title: "Complete code via LLM (openai/gpt-3.5-turbo)".to_string(),
             command: CODE_COMPLETE_COMMAND_ID.to_string(),
-            arguments: Some(vec![serde_json::to_value(CodeCompleteParams {
-                text_document: request_params.text_document,
-                range: request_params.range,
-            })?]),
+            arguments: location_args.clone(),
+        }));
+        result.push(CodeActionOrCommand::Command(Command {
+            title: "Add context to LLM code complete".to_string(),
+            command: MANUAL_CONTEXT_ADD_COMMAND_ID.to_string(),
+            arguments: location_args,
         }));
         let mut message = message.clone();
         message.set_result(result)?;
         Ok(Some(message))
     }
 
-    fn handle_code_complete_command(&mut self, message: &LspMessage) -> Result<Option<Value>> {
-        let mut params = message.get_params::<ExecuteCommandParams>()?;
+    fn get_code_location_from_params(params: &mut ExecuteCommandParams) -> Result<Location> {
+        Ok(serde_json::from_value(params.arguments.pop().ok_or(
+            anyhow!("code complete params must be specified with request"),
+        )?)?)
+    }
+
+    fn handle_code_complete_command(&mut self, mut params: ExecuteCommandParams) -> Result<()> {
         let llmvm_core_service = self.llmvm_core_service.clone();
         let passthrough_service = self.passthrough_service.clone();
         let root_uri = self.root_uri.clone();
         let content_manager = self.content_manager.clone();
-        let code_complete_params = serde_json::from_value(params.arguments.pop().ok_or(
-            anyhow!("code complete params must be specified with request"),
-        )?)?;
+        let code_location = Self::get_code_location_from_params(&mut params)?;
         let task_id = self.complete_task_last_id;
+        let random_context_locations = self
+            .queued_random_context_locations
+            .drain()
+            .map(|v| v.0)
+            .collect();
         self.complete_task_last_id += 1;
         tokio::spawn(async move {
             let code_complete = CodeCompleteTask::new(
@@ -128,14 +142,22 @@ impl LspInterceptor {
                 passthrough_service,
                 root_uri,
                 content_manager,
-                code_complete_params,
+                code_location,
                 task_id,
+                random_context_locations,
             );
             if let Err(e) = code_complete.run().await {
                 error!("code complete task failed: {}", e);
             }
         });
-        Ok(None)
+        Ok(())
+    }
+
+    fn handle_add_context_command(&mut self, mut params: ExecuteCommandParams) -> Result<()> {
+        let code_location = Self::get_code_location_from_params(&mut params)?;
+        self.queued_random_context_locations
+            .insert(HashableLocation(code_location));
+        Ok(())
     }
 
     async fn handle_doc_sync_notification(
@@ -160,10 +182,29 @@ impl LspInterceptor {
             },
             None => match &msg_info.message.payload {
                 JsonRpcMessage::Request(req) => match req.method.as_str() {
-                    ExecuteCommand::METHOD => Ok(Some(LspMessage::new_response::<ExecuteCommand>(
-                        self.handle_code_complete_command(&msg_info.message),
-                        req.id.clone(),
-                    ))),
+                    ExecuteCommand::METHOD => {
+                        let command_result = msg_info
+                            .message
+                            .get_params::<ExecuteCommandParams>()
+                            .ok()
+                            .map(|params| {
+                                match params.command.as_str() {
+                                    CODE_COMPLETE_COMMAND_ID => {
+                                        self.handle_code_complete_command(params)
+                                    }
+                                    MANUAL_CONTEXT_ADD_COMMAND_ID => {
+                                        self.handle_add_context_command(params)
+                                    }
+                                    _ => Ok(()),
+                                }
+                                .map(|_| None)
+                            })
+                            .unwrap_or(Ok(None));
+                        Ok(Some(LspMessage::new_response::<ExecuteCommand>(
+                            command_result,
+                            req.id.clone(),
+                        )))
+                    }
                     Initialize::METHOD => self.inspect_initialize_request(&msg_info.message),
                     _ => Ok(None),
                 },

@@ -10,6 +10,7 @@ use crate::jsonrpc::JsonRpcMessage;
 pub const CONTENT_LENGTH_HEADER: &str = "Content-Length";
 
 pub const CODE_COMPLETE_COMMAND_ID: &str = "llmvm-codeassist/complete";
+pub const MANUAL_CONTEXT_ADD_COMMAND_ID: &str = "llmvm-codeassist/addContext";
 
 #[derive(Clone, Debug)]
 pub struct LspMessage {
@@ -91,11 +92,4 @@ impl LspMessage {
 
         Ok(serde_json::from_value(params)?)
     }
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CodeCompleteParams {
-    pub text_document: TextDocumentIdentifier,
-    pub range: Range,
 }

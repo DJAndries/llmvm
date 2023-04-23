@@ -25,7 +25,7 @@ use crate::{
     GenerationResponse, ProtocolError, ProtocolErrorType,
 };
 
-const STDIO_COMMAND_TIMEOUT_SECS: u64 = 120;
+const STDIO_COMMAND_TIMEOUT_SECS: u64 = 900;
 
 #[derive(Serialize, Deserialize)]
 pub enum BackendRequest {

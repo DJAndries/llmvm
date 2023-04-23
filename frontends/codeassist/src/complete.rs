@@ -32,14 +32,14 @@ use tracing::debug;
 
 use crate::{
     content::ContentManager,
-    lsp::{CodeCompleteParams, LspMessage},
+    lsp::LspMessage,
     service::{LspMessageInfo, LspMessageService},
 };
 
 const PROGRESS_TOKEN_PREFIX: &str = "llmvm/complete/";
 
 #[derive(Debug, PartialEq, Eq)]
-struct HashableLocation(Location);
+pub struct HashableLocation(pub Location);
 
 impl Hash for HashableLocation {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -52,7 +52,7 @@ impl Hash for HashableLocation {
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
-struct SimpleFoldingRange {
+pub struct SimpleFoldingRange {
     start_line: u32,
     end_line: u32,
 }
@@ -64,7 +64,7 @@ struct DescribedPosition {
 
 #[derive(Debug, Serialize)]
 struct ContextSnippet {
-    descriptions: String,
+    descriptions: Option<String>,
     snippet: String,
 }
 
@@ -72,6 +72,7 @@ struct ContextSnippet {
 struct PromptParameters {
     lang: String,
     typedef_context_snippets: Vec<ContextSnippet>,
+    random_context_snippets: Vec<ContextSnippet>,
     main_snippet: String,
 }
 
@@ -92,9 +93,10 @@ pub struct CodeCompleteTask {
     root_uri: Option<Url>,
 
     content_manager: Arc<Mutex<ContentManager>>,
-    code_complete_params: CodeCompleteParams,
+    code_location: Location,
 
     task_id: usize,
+    random_context_locations: Vec<Location>,
 }
 
 impl CodeCompleteTask {
@@ -104,16 +106,18 @@ impl CodeCompleteTask {
         passthrough_service: LspMessageService,
         root_uri: Option<Url>,
         content_manager: Arc<Mutex<ContentManager>>,
-        code_complete_params: CodeCompleteParams,
+        code_location: Location,
         task_id: usize,
+        random_context_locations: Vec<Location>,
     ) -> Self {
         Self {
             llmvm_core_service,
             passthrough_service,
             root_uri,
             content_manager,
-            code_complete_params,
+            code_location,
             task_id,
+            random_context_locations,
         }
     }
 
@@ -125,7 +129,7 @@ impl CodeCompleteTask {
                 LspMessage::new_request::<SemanticTokensFullRequest>(SemanticTokensParams {
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
-                    text_document: self.code_complete_params.text_document.clone(),
+                    text_document: TextDocumentIdentifier::new(self.code_location.uri.clone()),
                 })
                 .unwrap(),
                 true,
@@ -144,8 +148,8 @@ impl CodeCompleteTask {
             }
             current_pos.character += symbol.delta_start;
 
-            if self.code_complete_params.range.start <= current_pos
-                && self.code_complete_params.range.end > current_pos
+            if self.code_location.range.start <= current_pos
+                && self.code_location.range.end > current_pos
             {
                 let range = Range::new(
                     current_pos.clone(),
@@ -155,7 +159,7 @@ impl CodeCompleteTask {
                 result.push(DescribedPosition {
                     position: current_pos.clone(),
                     description: content_manager
-                        .get_snippet(&self.code_complete_params.text_document.uri, &range)
+                        .get_snippet(&self.code_location.uri, &range)
                         .ok_or(anyhow!("failed to get snippet for token"))?,
                 });
             }
@@ -176,7 +180,7 @@ impl CodeCompleteTask {
                         work_done_progress_params: Default::default(),
                         partial_result_params: Default::default(),
                         text_document_position_params: TextDocumentPositionParams::new(
-                            self.code_complete_params.text_document.clone(),
+                            TextDocumentIdentifier::new(self.code_location.uri.clone()),
                             position.position,
                         ),
                     })
@@ -242,7 +246,7 @@ impl CodeCompleteTask {
         Ok(result)
     }
 
-    async fn get_context_snippets(
+    async fn get_typedef_context_snippets(
         &mut self,
         typedef_locations: &HashMap<HashableLocation, Vec<String>>,
         folding_ranges: &HashMap<Url, HashSet<SimpleFoldingRange>>,
@@ -281,11 +285,13 @@ impl CodeCompleteTask {
                     break;
                 }
             }
-            let descriptions = descriptions
-                .iter()
-                .map(|d| format!("\"{d}\""))
-                .collect::<Vec<String>>()
-                .join(", ");
+            let descriptions = Some(
+                descriptions
+                    .iter()
+                    .map(|d| format!("\"{d}\""))
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            );
             result.push(ContextSnippet {
                 descriptions,
                 snippet: content_manager
@@ -296,9 +302,24 @@ impl CodeCompleteTask {
         Ok(result)
     }
 
+    async fn get_random_context_snippets(&self) -> Result<Vec<ContextSnippet>> {
+        let mut result = Vec::new();
+        let content_manager = self.content_manager.lock().await;
+        for location in &self.random_context_locations {
+            result.push(ContextSnippet {
+                descriptions: None,
+                snippet: content_manager
+                    .get_snippet(&location.uri, &location.range)
+                    .ok_or(anyhow!("failed to get context snippet from fetcher"))?,
+            });
+        }
+        Ok(result)
+    }
+
     async fn send_generation_request(
         &mut self,
-        context_snippets: Vec<ContextSnippet>,
+        typedef_context_snippets: Vec<ContextSnippet>,
+        random_context_snippets: Vec<ContextSnippet>,
         main_snippet: String,
     ) -> Result<String> {
         let prompt_params = PromptParameters {
@@ -306,8 +327,9 @@ impl CodeCompleteTask {
                 .content_manager
                 .lock()
                 .await
-                .get_lang_id(&self.code_complete_params.text_document.uri),
-            typedef_context_snippets: context_snippets,
+                .get_lang_id(&self.code_location.uri),
+            typedef_context_snippets,
+            random_context_snippets,
             main_snippet,
         };
         let core_service = Ready::new(&mut self.llmvm_core_service)
@@ -406,9 +428,9 @@ impl CodeCompleteTask {
             .join("\n");
         let mut changes = HashMap::new();
         changes.insert(
-            self.code_complete_params.text_document.uri.clone(),
+            self.code_location.uri.clone(),
             vec![TextEdit::new(
-                self.code_complete_params.range.clone(),
+                self.code_location.range.clone(),
                 completed_snippet,
             )],
         );
@@ -431,7 +453,7 @@ impl CodeCompleteTask {
         self.content_manager
             .lock()
             .await
-            .maybe_load_file(&self.code_complete_params.text_document.uri)
+            .maybe_load_file(&self.code_location.uri)
             .await?;
 
         let symbols = self.get_relevant_symbol_positions().await?;
@@ -440,27 +462,30 @@ impl CodeCompleteTask {
 
         let folding_ranges = self.get_folding_ranges(&typedef_locations).await?;
 
-        let context_snippets = self
-            .get_context_snippets(&typedef_locations, &folding_ranges)
+        let typedef_context_snippets = self
+            .get_typedef_context_snippets(&typedef_locations, &folding_ranges)
             .await?;
+
+        let random_context_snippets = self.get_random_context_snippets().await?;
 
         let main_snippet = self
             .content_manager
             .lock()
             .await
-            .get_snippet(
-                &self.code_complete_params.text_document.uri,
-                &self.code_complete_params.range,
-            )
+            .get_snippet(&self.code_location.uri, &self.code_location.range)
             .ok_or(anyhow!("failed to get main snippet from fetcher"))?;
 
-        debug!("context: {:#?}", context_snippets);
+        debug!("typedef context: {:#?}", typedef_context_snippets);
         debug!("main snippet: {:#?}", main_snippet);
 
         self.notify_user(&progress_token, false).await?;
 
         let completed_snippet = self
-            .send_generation_request(context_snippets, main_snippet)
+            .send_generation_request(
+                typedef_context_snippets,
+                random_context_snippets,
+                main_snippet,
+            )
             .await?;
 
         debug!("completed snippet: {:#?}", completed_snippet);
