@@ -1,8 +1,8 @@
 mod util;
 
 use handlebars::{
-    Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext, RenderError,
-    Renderable, StringOutput,
+    no_escape, Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext,
+    RenderError, Renderable, StringOutput,
 };
 use llmvm_protocol::stdio::{BackendRequest, BackendResponse, StdioClient, StdioError};
 use llmvm_protocol::tower::timeout::Timeout;
@@ -152,12 +152,15 @@ impl ReadyPrompt {
 
     fn process(template: &str, parameters: &Value, is_chat_model: bool) -> Result<Self> {
         let mut handlebars = Handlebars::new();
+        handlebars.register_escape_fn(no_escape);
         let system_role_helper_state =
             Arc::new(std::sync::Mutex::new(SystemRoleHelperState::default()));
         handlebars.register_helper(
             "system_role",
             Box::new(SystemRoleHelper(system_role_helper_state.clone())),
         );
+
+        debug!("prompt parameters = {:?}", parameters);
 
         let mut main_prompt = handlebars
             .render_template(template, parameters)?

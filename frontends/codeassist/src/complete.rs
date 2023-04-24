@@ -20,7 +20,7 @@ use lsp_types::{
     ApplyWorkspaceEditParams, DocumentSymbolParams, FoldingRange, FoldingRangeParams, Location,
     MessageType, PartialResultParams, Position, ProgressParams, ProgressParamsValue, ProgressToken,
     Range, SelectionRangeParams, SemanticTokens, SemanticTokensDeltaParams, SemanticTokensParams,
-    SemanticTokensRangeParams, ShowMessageParams, TextDocumentIdentifier,
+    SemanticTokensRangeParams, ServerCapabilities, ShowMessageParams, TextDocumentIdentifier,
     TextDocumentPositionParams, TextEdit, Url, WorkDoneProgress, WorkDoneProgressBegin,
     WorkDoneProgressCreateParams, WorkDoneProgressEnd, WorkDoneProgressParams,
     WorkDoneProgressReport, WorkspaceEdit,
@@ -34,6 +34,7 @@ use crate::{
     content::ContentManager,
     lsp::LspMessage,
     service::{LspMessageInfo, LspMessageService},
+    CodeAssistConfig,
 };
 
 const PROGRESS_TOKEN_PREFIX: &str = "llmvm/complete/";
@@ -86,11 +87,15 @@ impl From<FoldingRange> for SimpleFoldingRange {
 }
 
 pub struct CodeCompleteTask {
+    config: Arc<CodeAssistConfig>,
     // TODO: remove buffer once json-rpc is used in protocol
     // just clone the service directly instead
     llmvm_core_service: Buffer<Timeout<StdioClient<CoreRequest, CoreResponse>>, CoreRequest>,
     passthrough_service: LspMessageService,
     root_uri: Option<Url>,
+    supports_semantic_tokens: bool,
+    supports_folding_ranges: bool,
+    supports_type_definitions: bool,
 
     content_manager: Arc<Mutex<ContentManager>>,
     code_location: Location,
@@ -102,18 +107,33 @@ pub struct CodeCompleteTask {
 impl CodeCompleteTask {
     // TODO: add optional custom prompt
     pub fn new(
+        config: Arc<CodeAssistConfig>,
         llmvm_core_service: Buffer<Timeout<StdioClient<CoreRequest, CoreResponse>>, CoreRequest>,
         passthrough_service: LspMessageService,
+        server_capabilities: Option<&ServerCapabilities>,
         root_uri: Option<Url>,
         content_manager: Arc<Mutex<ContentManager>>,
         code_location: Location,
         task_id: usize,
         random_context_locations: Vec<Location>,
     ) -> Self {
+        let supports_semantic_tokens = server_capabilities
+            .map(|c| c.semantic_tokens_provider.is_some())
+            .unwrap_or_default();
+        let supports_folding_ranges = server_capabilities
+            .map(|c| c.folding_range_provider.is_some())
+            .unwrap_or_default();
+        let supports_type_definitions = server_capabilities
+            .map(|c| c.type_definition_provider.is_some())
+            .unwrap_or_default();
         Self {
+            config,
             llmvm_core_service,
             passthrough_service,
             root_uri,
+            supports_semantic_tokens,
+            supports_folding_ranges,
+            supports_type_definitions,
             content_manager,
             code_location,
             task_id,
@@ -163,6 +183,44 @@ impl CodeCompleteTask {
                         .ok_or(anyhow!("failed to get snippet for token"))?,
                 });
             }
+        }
+        Ok(result)
+    }
+
+    async fn get_relevant_symbol_positions_without_semantic_tokens(
+        &mut self,
+    ) -> Result<Vec<DescribedPosition>> {
+        let mut result = Vec::new();
+        let content_manager = self.content_manager.lock().await;
+        let snippet = content_manager
+            .get_snippet(&self.code_location.uri, &self.code_location.range)
+            .ok_or(anyhow!("failed to get snippet for token"))?;
+        let mut current_position = self.code_location.range.start.clone();
+        let mut current_symbol_position: Option<DescribedPosition> = None;
+        for ch in snippet.chars() {
+            if ch.is_whitespace() || !ch.is_alphanumeric() {
+                if let Some(position) = current_symbol_position.take() {
+                    result.push(position);
+                }
+                if ch == '\n' {
+                    current_position.line += 1;
+                    current_position.character = 0;
+                    continue;
+                }
+            } else {
+                if let Some(position) = current_symbol_position.as_mut() {
+                    position.description.push(ch);
+                } else {
+                    current_symbol_position = Some(DescribedPosition {
+                        position: current_position.clone(),
+                        description: ch.to_string(),
+                    });
+                }
+            }
+            current_position.character += 1;
+        }
+        if let Some(position) = current_symbol_position {
+            result.push(position);
         }
         Ok(result)
     }
@@ -420,6 +478,12 @@ impl CodeCompleteTask {
         Ok(())
     }
 
+    fn wrap_snippet(snippet: String, header: String) -> String {
+        let top_line = format!(">>=={:=<40}=#", header);
+        let bottom_line = format!("<<=={:=<40}=#", "");
+        format!("{}\n{}\n{}\n", top_line, snippet, bottom_line)
+    }
+
     async fn apply_edit(&mut self, completed_snippet: String) -> Result<()> {
         let completed_snippet = completed_snippet
             .split("\n")
@@ -427,13 +491,17 @@ impl CodeCompleteTask {
             .collect::<Vec<&str>>()
             .join("\n");
         let mut changes = HashMap::new();
-        changes.insert(
-            self.code_location.uri.clone(),
-            vec![TextEdit::new(
-                self.code_location.range.clone(),
-                completed_snippet,
-            )],
-        );
+        let text_edit = match self.config.prefer_insert_in_place {
+            false => {
+                let next_line_pos = Position::new(self.code_location.range.end.line + 1, 0);
+                TextEdit::new(
+                    Range::new(next_line_pos.clone(), next_line_pos),
+                    Self::wrap_snippet(completed_snippet, "Completed snippet".to_string()),
+                )
+            }
+            true => TextEdit::new(self.code_location.range.clone(), completed_snippet),
+        };
+        changes.insert(self.code_location.uri.clone(), vec![text_edit]);
         self.passthrough_service
             .call(LspMessageInfo::new(
                 LspMessage::new_request::<ApplyWorkspaceEdit>(ApplyWorkspaceEditParams {
@@ -456,15 +524,29 @@ impl CodeCompleteTask {
             .maybe_load_file(&self.code_location.uri)
             .await?;
 
-        let symbols = self.get_relevant_symbol_positions().await?;
+        let typedef_context_snippets = if self.supports_type_definitions {
+            let symbols = if !self.supports_semantic_tokens {
+                debug!("getting symbol positions via semantic tokens");
+                self.get_relevant_symbol_positions().await?
+            } else {
+                debug!("getting symbol positions via whitespace");
+                self.get_relevant_symbol_positions_without_semantic_tokens()
+                    .await?
+            };
 
-        let typedef_locations = self.get_type_definition_locations(symbols).await?;
+            let typedef_locations = self.get_type_definition_locations(symbols).await?;
 
-        let folding_ranges = self.get_folding_ranges(&typedef_locations).await?;
+            let folding_ranges = if self.supports_folding_ranges {
+                self.get_folding_ranges(&typedef_locations).await?
+            } else {
+                Default::default()
+            };
 
-        let typedef_context_snippets = self
-            .get_typedef_context_snippets(&typedef_locations, &folding_ranges)
-            .await?;
+            self.get_typedef_context_snippets(&typedef_locations, &folding_ranges)
+                .await?
+        } else {
+            Default::default()
+        };
 
         let random_context_snippets = self.get_random_context_snippets().await?;
 

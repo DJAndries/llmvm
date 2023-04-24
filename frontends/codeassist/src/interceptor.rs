@@ -5,7 +5,7 @@ use llmvm_protocol::stdio::{CoreRequest, CoreResponse, StdioClient};
 use lsp_types::{
     request::{CodeActionRequest, ExecuteCommand, Initialize, Request},
     CodeActionOrCommand, CodeActionParams, CodeActionResponse, Command, ExecuteCommandParams,
-    InitializeParams, InitializeResult, Location, Range, Url,
+    InitializeParams, InitializeResult, Location, Range, ServerCapabilities, Url,
 };
 use serde_json::Value;
 use tokio::{
@@ -21,15 +21,19 @@ use crate::{
     jsonrpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse},
     lsp::{LspMessage, CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID},
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
+    CodeAssistConfig,
 };
 
 const CORE_SERVICE_REQUEST_BOUND: usize = 32;
 
 pub struct LspInterceptor {
+    config: Arc<CodeAssistConfig>,
+
     service_rx: mpsc::UnboundedReceiver<LspMessageTrx>,
     service_tx: Option<mpsc::UnboundedSender<LspMessageTrx>>,
 
     passthrough_service: LspMessageService,
+    server_capabilities: Option<Arc<ServerCapabilities>>,
 
     llmvm_core_service: Buffer<Timeout<StdioClient<CoreRequest, CoreResponse>>, CoreRequest>,
 
@@ -43,14 +47,17 @@ pub struct LspInterceptor {
 
 impl LspInterceptor {
     pub fn new(
+        config: Arc<CodeAssistConfig>,
         passthrough_service: LspMessageService,
         llmvm_core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
     ) -> Self {
         let (service_tx, service_rx) = mpsc::unbounded_channel();
         Self {
+            config,
             service_rx,
             service_tx: Some(service_tx),
             passthrough_service,
+            server_capabilities: None,
             llmvm_core_service: Buffer::new(llmvm_core_service, CORE_SERVICE_REQUEST_BOUND),
             root_uri: None,
             complete_task_last_id: 0,
@@ -73,8 +80,12 @@ impl LspInterceptor {
         Ok(None)
     }
 
-    fn transform_initialize_response(message: &LspMessage) -> Result<Option<LspMessage>> {
+    fn transform_initialize_response(
+        &mut self,
+        message: &LspMessage,
+    ) -> Result<Option<LspMessage>> {
         let mut result = message.get_result::<InitializeResult>()?;
+        self.server_capabilities = Some(Arc::new(result.capabilities.clone()));
         let command_options = result
             .capabilities
             .execute_command_provider
@@ -124,8 +135,10 @@ impl LspInterceptor {
     }
 
     fn handle_code_complete_command(&mut self, mut params: ExecuteCommandParams) -> Result<()> {
+        let config = self.config.clone();
         let llmvm_core_service = self.llmvm_core_service.clone();
         let passthrough_service = self.passthrough_service.clone();
+        let server_capabilities = self.server_capabilities.clone();
         let root_uri = self.root_uri.clone();
         let content_manager = self.content_manager.clone();
         let code_location = Self::get_code_location_from_params(&mut params)?;
@@ -138,8 +151,10 @@ impl LspInterceptor {
         self.complete_task_last_id += 1;
         tokio::spawn(async move {
             let code_complete = CodeCompleteTask::new(
+                config,
                 llmvm_core_service,
                 passthrough_service,
+                server_capabilities.as_ref().map(|v| v.as_ref()),
                 root_uri,
                 content_manager,
                 code_location,
@@ -157,6 +172,10 @@ impl LspInterceptor {
         let code_location = Self::get_code_location_from_params(&mut params)?;
         self.queued_random_context_locations
             .insert(HashableLocation(code_location));
+        debug!(
+            "random context added, current random context len = {}",
+            self.queued_random_context_locations.len()
+        );
         Ok(())
     }
 
@@ -177,7 +196,7 @@ impl LspInterceptor {
                 CodeActionRequest::METHOD => {
                     Self::transform_code_action_response(&origin_request, &msg_info.message)
                 }
-                Initialize::METHOD => Self::transform_initialize_response(&msg_info.message),
+                Initialize::METHOD => self.transform_initialize_response(&msg_info.message),
                 _ => Ok(None),
             },
             None => match &msg_info.message.payload {

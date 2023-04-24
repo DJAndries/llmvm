@@ -1,6 +1,7 @@
 use std::{
     env,
     process::{exit, Stdio},
+    sync::Arc,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -27,17 +28,19 @@ const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
 const CONFIG_FILENAME: &str = "codeassist.toml";
 const LOG_FILENAME: &str = "codeassist.log";
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct CodeAssistConfig {
     tracing_directive: Option<String>,
-
     bin_path: Option<String>,
+
+    prefer_insert_in_place: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config: CodeAssistConfig = match load_config(CONFIG_FILENAME) {
-        Ok(config) => config,
+    let config: Arc<CodeAssistConfig> = match load_config(CONFIG_FILENAME) {
+        Ok(config) => Arc::new(config),
         Err(e) => {
             eprintln!("failed to load config: {}", e);
             exit(1);
@@ -80,7 +83,8 @@ async fn main() -> Result<()> {
     .await
     .context("failed to start llmvm-core-cli")?;
 
-    let mut interceptor = LspInterceptor::new(passthrough.get_service(), llmvm_core_service);
+    let mut interceptor =
+        LspInterceptor::new(config, passthrough.get_service(), llmvm_core_service);
 
     passthrough.set_interceptor_service(interceptor.get_service());
 

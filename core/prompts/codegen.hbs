@@ -4,8 +4,8 @@ You will complete the user's incomplete snippet of code in {{lang}}. They may pr
 - Only output the completed code snippet
 - You may embed comments within the snippet
 - Do not repeat type definitions that were provided to you
-- Do not include anything before the completed snippet in your response
-- Do not include anything after the completed snippet in your response
+- Do not output any text, including explanations, before the completed snippet in your response
+- Do not output any text including explanations, after the completed snippet in your response
 {{/system_role}}
 
 {{#each typedef_context_snippets}}
@@ -14,7 +14,7 @@ Here is the type definition for {{this.descriptions}}:
 {{this.snippet}}
 
 {{/each}}
-{{#each typedef_context_snippets}}
+{{#each random_context_snippets}}
 Here is a random snippet of context provided by the user:
 
 {{this.snippet}}
