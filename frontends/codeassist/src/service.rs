@@ -1,9 +1,9 @@
 use std::{error::Error, future::Future, pin::Pin, task::Poll};
 
-use llmvm_protocol::tower::Service;
+use llmvm_protocol::{jsonrpc::JsonRpcRequest, tower::Service};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::{jsonrpc::JsonRpcRequest, lsp::LspMessage};
+use crate::lsp::LspMessage;
 
 #[derive(Clone, Debug)]
 pub struct LspMessageInfo {

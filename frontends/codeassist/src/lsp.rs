@@ -5,7 +5,10 @@ use lsp_types::{notification::Notification, request::Request, Range, TextDocumen
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::jsonrpc::JsonRpcMessage;
+use llmvm_protocol::{
+    jsonrpc::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse},
+    ProtocolError, ProtocolErrorType,
+};
 
 pub const CONTENT_LENGTH_HEADER: &str = "Content-Length";
 
@@ -22,30 +25,35 @@ impl LspMessage {
     pub fn new_request<R: Request>(params: R::Params) -> Result<Self, serde_json::Error> {
         Ok(Self {
             headers: HashMap::new(),
-            payload: JsonRpcMessage::new_request(
+            payload: JsonRpcRequest::new(
                 R::METHOD.to_string(),
                 Some(serde_json::to_value(params)?),
-            ),
+            )
+            .into(),
         })
     }
 
     pub fn new_notification<N: Notification>(params: N::Params) -> Result<Self, serde_json::Error> {
         Ok(Self {
             headers: HashMap::new(),
-            payload: JsonRpcMessage::new_notification(
+            payload: JsonRpcNotification::new(
                 N::METHOD.to_string(),
                 Some(serde_json::to_value(params)?),
-            ),
+            )
+            .into(),
         })
     }
 
     pub fn new_response<R: Request>(result: Result<R::Result>, id: Value) -> Self {
         Self {
             headers: HashMap::new(),
-            payload: JsonRpcMessage::new_response(
-                result.map(|v| serde_json::to_value(v).unwrap()),
+            payload: JsonRpcResponse::new(
+                result
+                    .map(|v| serde_json::to_value(v).unwrap())
+                    .map_err(|e| ProtocolError::new(ProtocolErrorType::Internal, e.into())),
                 id,
-            ),
+            )
+            .into(),
         }
     }
 

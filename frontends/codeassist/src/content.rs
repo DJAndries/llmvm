@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use llmvm_protocol::jsonrpc::JsonRpcMessage;
 use lsp_types::{
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
@@ -18,7 +19,7 @@ use tokio::{
 use tokio_stream::{wrappers::LinesStream, StreamExt};
 use tracing::trace;
 
-use crate::{jsonrpc::JsonRpcMessage, lsp::LspMessage};
+use crate::lsp::LspMessage;
 
 const UNKNOWN_LANG_ID: &str = "unknown";
 

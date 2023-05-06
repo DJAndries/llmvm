@@ -19,7 +19,6 @@ use tokio::{
 mod complete;
 mod content;
 mod interceptor;
-mod jsonrpc;
 mod lsp;
 mod passthrough;
 mod service;

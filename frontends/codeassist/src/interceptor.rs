@@ -1,7 +1,10 @@
 use std::{collections::HashSet, sync::Arc};
 
 use anyhow::{anyhow, Result};
-use llmvm_protocol::stdio::{CoreRequest, CoreResponse, StdioClient};
+use llmvm_protocol::{
+    jsonrpc::{JsonRpcMessage, JsonRpcRequest},
+    stdio::{CoreRequest, CoreResponse, StdioClient},
+};
 use lsp_types::{
     request::{CodeActionRequest, ExecuteCommand, Initialize, Request},
     CodeActionOrCommand, CodeActionParams, CodeActionResponse, Command, ExecuteCommandParams,
@@ -18,7 +21,6 @@ use tracing::{debug, error};
 use crate::{
     complete::{CodeCompleteTask, HashableLocation, SimpleFoldingRange},
     content::ContentManager,
-    jsonrpc::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse},
     lsp::{LspMessage, CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID},
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
     CodeAssistConfig,

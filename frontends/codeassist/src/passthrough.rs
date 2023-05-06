@@ -8,7 +8,10 @@ use std::{
 };
 
 use anyhow::Result;
-use llmvm_protocol::tower::Service;
+use llmvm_protocol::{
+    jsonrpc::{JsonRpcMessage, JsonRpcRequest},
+    tower::Service,
+};
 use lsp_types::{
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Notification,
@@ -32,7 +35,6 @@ use tokio::{
 use tracing::debug;
 
 use crate::{
-    jsonrpc::{JsonRpcMessage, JsonRpcRequest},
     lsp::{
         LspMessage, CODE_COMPLETE_COMMAND_ID, CONTENT_LENGTH_HEADER, MANUAL_CONTEXT_ADD_COMMAND_ID,
     },
