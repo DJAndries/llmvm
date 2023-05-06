@@ -1,6 +1,6 @@
 mod task;
 
-use std::{collections::HashMap, str::FromStr, thread::JoinHandle};
+use std::{collections::HashMap, str::FromStr, sync::Arc, thread::JoinHandle};
 
 use llama_rs::{InferenceError, InferenceSessionParameters, LoadError, LoadProgress, Model};
 use llmvm_protocol::{

@@ -1,4 +1,7 @@
 #[cfg(feature = "stdio")]
+pub mod jsonrpc;
+
+#[cfg(feature = "stdio")]
 pub mod stdio;
 
 #[cfg(feature = "stdio")]

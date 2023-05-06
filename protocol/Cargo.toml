@@ -10,7 +10,8 @@ serde_json = "1.0"
 axum = { version = "0.6", optional = true }
 thiserror = "1.0"
 tower = { version = "0.4", optional = true, features = ["timeout"] }
-tokio = { version = "1.27", optional = true, features = ["io-std", "io-util", "process"] }
+tokio = { version = "1.27", optional = true, features = ["io-std", "io-util", "process", "rt", "sync"] }
+tracing = "0.1"
 
 [features]
 http_server = ["dep:axum"]
