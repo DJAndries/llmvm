@@ -12,23 +12,21 @@ use llmvm_protocol::{
     GenerationParameters, GenerationRequest,
 };
 use lsp_types::{
-    notification::{Progress, ShowMessage},
+    notification::{Progress},
     request::{
-        ApplyWorkspaceEdit, DocumentSymbolRequest, FoldingRangeRequest, GotoTypeDefinition,
-        GotoTypeDefinitionParams, GotoTypeDefinitionResponse, SelectionRangeRequest,
-        SemanticTokensFullRequest, SemanticTokensRangeRequest, WorkDoneProgressCreate,
+        ApplyWorkspaceEdit, FoldingRangeRequest, GotoTypeDefinition,
+        GotoTypeDefinitionParams, GotoTypeDefinitionResponse,
+        SemanticTokensFullRequest, WorkDoneProgressCreate,
     },
-    ApplyWorkspaceEditParams, DocumentSymbolParams, FoldingRange, FoldingRangeParams, Location,
-    MessageType, PartialResultParams, Position, ProgressParams, ProgressParamsValue, ProgressToken,
-    Range, SelectionRangeParams, SemanticTokens, SemanticTokensDeltaParams, SemanticTokensParams,
-    SemanticTokensRangeParams, ServerCapabilities, ShowMessageParams, TextDocumentIdentifier,
+    ApplyWorkspaceEditParams, FoldingRange, FoldingRangeParams, Location, Position, ProgressParams, ProgressParamsValue, ProgressToken,
+    Range, SemanticTokens, SemanticTokensParams, ServerCapabilities, TextDocumentIdentifier,
     TextDocumentPositionParams, TextEdit, Url, WorkDoneProgress, WorkDoneProgressBegin,
-    WorkDoneProgressCreateParams, WorkDoneProgressEnd, WorkDoneProgressParams,
+    WorkDoneProgressCreateParams, WorkDoneProgressEnd,
     WorkDoneProgressReport, WorkspaceEdit,
 };
 use serde::Serialize;
 use tokio::{sync::Mutex, task::JoinError};
-use tower::{buffer::Buffer, timeout::Timeout, util::Ready, Service, ServiceExt};
+use tower::{timeout::Timeout, Service, ServiceExt};
 use tracing::{debug, error};
 
 use crate::{

@@ -1,11 +1,10 @@
 use serde_json::Value;
 use std::{
-    collections::{HashMap, VecDeque},
-    env,
+    collections::{HashMap},
     error::Error,
     future::Future,
     marker::PhantomData,
-    path::{Path, PathBuf},
+    path::{Path},
     pin::Pin,
     process::Stdio,
     sync::Arc,
@@ -17,7 +16,7 @@ use tokio::{
     io::{stdin, stdout, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Stdin, Stdout},
     sync::{
         mpsc::{self, UnboundedReceiver},
-        oneshot, Mutex, Notify,
+        oneshot, Mutex,
     },
 };
 use tokio::{
@@ -33,8 +32,7 @@ use crate::{
     jsonrpc::{
         JsonRpcErrorCode, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
     },
-    services::{ServiceError, ServiceFuture},
-    Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
+    services::{ServiceError, ServiceFuture}, BackendGenerationRequest, BackendGenerationResponse, GenerationRequest,
     GenerationResponse, ProtocolError, ProtocolErrorType,
 };
 

@@ -16,24 +16,20 @@ use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use rust_embed::RustEmbed;
-use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
-use std::env::{self, current_dir};
+use serde::{Deserialize};
+use serde_json::{Value};
+
 use std::fs::create_dir;
 use std::{
-    cell::{Cell, RefCell},
-    collections::{HashMap, HashSet},
-    io,
-    ops::DerefMut,
+    cell::{RefCell},
+    collections::{HashMap},
     path::{Path, PathBuf},
-    rc::Rc,
     str::{FromStr, Utf8Error},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
 use tokio::fs;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex};
 use tracing::{debug, info};
 use util::current_timestamp_secs;
 

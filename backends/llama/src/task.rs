@@ -1,13 +1,13 @@
-use std::collections::HashMap;
+
 
 use crate::{LlamaError, LlamaWeightsConfig, Result};
 use llama_rs::{InferenceParameters, LoadProgress, Model};
 use llmvm_protocol::{BackendGenerationRequest, BackendGenerationResponse};
 use llmvm_util::get_file_path;
 use rand::rngs::ThreadRng;
-use rand::{thread_rng, Rng};
+use rand::{thread_rng};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot::{channel as oneshot_channel, Sender as OneshotSender};
 use tracing::{debug, info};

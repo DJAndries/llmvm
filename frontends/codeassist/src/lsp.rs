@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Result};
-use lsp_types::{notification::Notification, request::Request, Range, TextDocumentIdentifier};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use lsp_types::{notification::Notification, request::Request};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
 use llmvm_protocol::{

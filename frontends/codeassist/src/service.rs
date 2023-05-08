@@ -1,4 +1,4 @@
-use std::{error::Error, future::Future, pin::Pin, task::Poll};
+use std::{future::Future, pin::Pin, task::Poll};
 
 use llmvm_protocol::{jsonrpc::JsonRpcRequest, tower::Service};
 use tokio::sync::{mpsc, oneshot};

@@ -1,10 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet},
-    error::Error,
-    future::Future,
-    marker::PhantomData,
+    collections::{HashMap},
     pin::Pin,
-    time::Duration,
 };
 
 use anyhow::Result;
@@ -19,16 +15,16 @@ use lsp_types::{
     request::{CodeActionRequest, ExecuteCommand, Initialize, Request},
     ExecuteCommandParams,
 };
-use serde::{de::DeserializeOwned, Serialize};
+
 use serde_json::Value;
 use tokio::{
     io::{
-        stdin, stdout, AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Stdin,
+        AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Stdin,
         Stdout,
     },
     process::{ChildStdin, ChildStdout},
     sync::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        mpsc::{self},
         oneshot,
     },
 };

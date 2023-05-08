@@ -1,7 +1,7 @@
 use std::process::exit;
 use std::sync::Arc;
 
-use clap::{arg, command, Parser};
+use clap::{command, Parser};
 use llmvm_backend_util::{run_backend, BackendCommand};
 use llmvm_outsource::{OutsourceBackend, OutsourceConfig};
 use llmvm_util::config::load_config;

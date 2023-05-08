@@ -1,12 +1,11 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result};
 use llmvm_protocol::jsonrpc::JsonRpcMessage;
 use lsp_types::{
     notification::{
-        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
         Notification,
     },
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Range,
-    TextDocumentContentChangeEvent, Url,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Range, Url,
 };
 use std::{
     cmp::min,

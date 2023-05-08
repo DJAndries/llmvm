@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+
 
 use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, Message, MessageRole, ModelDescription,
 };
 use reqwest::{Client, Url};
 use serde::Deserialize;
-use serde_json::Value;
+
 
 use crate::util::check_status_code;
 use crate::{OutsourceError, Result};

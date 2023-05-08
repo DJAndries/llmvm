@@ -1,19 +1,19 @@
 mod task;
 
-use std::{collections::HashMap, str::FromStr, sync::Arc, thread::JoinHandle};
+use std::{collections::HashMap, str::FromStr, thread::JoinHandle};
 
-use llama_rs::{InferenceError, InferenceSessionParameters, LoadError, LoadProgress, Model};
+use llama_rs::{InferenceSessionParameters, LoadError};
 use llmvm_protocol::{
     async_trait, Backend, BackendGenerationRequest, BackendGenerationResponse, ModelDescription,
     ProtocolError, ProtocolErrorType,
 };
-use rand::thread_rng;
+
 use serde::Deserialize;
 use std::thread;
 use task::{send_request_to_task, LlamaRequest, LlamaTask};
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, RwLock};
-use tracing::{debug, error, info, instrument};
+use tracing::{error};
 
 pub type Result<T> = std::result::Result<T, LlamaError>;
 

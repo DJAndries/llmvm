@@ -8,18 +8,17 @@ use llmvm_protocol::{
 use lsp_types::{
     request::{CodeActionRequest, ExecuteCommand, Initialize, Request},
     CodeActionOrCommand, CodeActionParams, CodeActionResponse, Command, ExecuteCommandParams,
-    InitializeParams, InitializeResult, Location, Range, ServerCapabilities, Url,
+    InitializeParams, InitializeResult, Location, ServerCapabilities, Url,
 };
-use serde_json::Value;
+
 use tokio::{
     sync::{mpsc, Mutex},
-    task::JoinHandle,
 };
-use tower::{buffer::Buffer, timeout::Timeout};
+use tower::{timeout::Timeout};
 use tracing::{debug, error};
 
 use crate::{
-    complete::{CodeCompleteTask, HashableLocation, SimpleFoldingRange},
+    complete::{CodeCompleteTask, HashableLocation},
     content::ContentManager,
     lsp::{LspMessage, CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID},
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
