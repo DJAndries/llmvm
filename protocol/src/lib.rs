@@ -4,7 +4,9 @@ pub mod jsonrpc;
 #[cfg(feature = "stdio")]
 pub mod stdio;
 
-#[cfg(feature = "stdio")]
+#[cfg(feature = "tower")]
+pub mod services;
+#[cfg(feature = "tower")]
 pub use tower;
 
 pub use async_trait::async_trait;

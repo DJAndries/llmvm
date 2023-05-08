@@ -14,6 +14,7 @@ tokio = { version = "1.27", optional = true, features = ["io-std", "io-util", "p
 tracing = "0.1"
 
 [features]
-http_server = ["dep:axum"]
-stdio = ["dep:tower", "dep:tokio"]
+http = ["dep:axum"]
+tower = ["dep:tower"]
+stdio = ["tower", "dep:tokio"]
 

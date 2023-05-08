@@ -2,13 +2,10 @@ use std::{process::exit, sync::Arc};
 
 use clap::{arg, command, Args, Parser, Subcommand};
 use llmvm_core::{LLMVMCore, LLMVMCoreConfig};
-use llmvm_protocol::{
-    stdio::{CoreService, StdioServer},
-    Core, GenerationParameters, GenerationRequest,
-};
+use llmvm_protocol::services::CoreService;
+use llmvm_protocol::{stdio::StdioServer, Core, GenerationParameters, GenerationRequest};
 use llmvm_util::config::load_config;
 use llmvm_util::logging::setup_subscriber;
-use serde::Deserialize;
 
 const CONFIG_FILENAME: &str = "core.toml";
 const LOG_FILENAME: &str = "core.log";

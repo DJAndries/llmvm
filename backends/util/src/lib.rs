@@ -2,7 +2,8 @@ use std::process::exit;
 use std::sync::Arc;
 
 use clap::{Args, Subcommand};
-use llmvm_protocol::stdio::{BackendService, StdioServer};
+use llmvm_protocol::services::BackendService;
+use llmvm_protocol::stdio::StdioServer;
 use llmvm_protocol::{Backend, BackendGenerationRequest};
 
 #[derive(Args, Clone)]
