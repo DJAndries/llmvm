@@ -12,7 +12,9 @@ use llmvm_protocol::{
     GenerationRequest, GenerationResponse, Message, MessageRole, ModelDescription, ProtocolError,
     ProtocolErrorType,
 };
-use llmvm_util::{get_file_path, DirType};
+use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
+use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -38,6 +40,7 @@ use util::current_timestamp_secs;
 const BACKEND_COMMAND_PREFIX: &str = "llmvm-";
 const BACKEND_COMMAND_SUFFIX: &str = "-cli";
 const PROJECT_DIR_NAME: &str = ".llmvm";
+const DEFAULT_TTL_SECS: u64 = 14 * 24 * 3600;
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
@@ -220,142 +223,109 @@ pub async fn load_preset(preset_id: &str) -> Result<GenerationParameters> {
     let preset_file_name = format!("{}.toml", preset_id);
     let preset_path = get_file_path(DirType::Presets, &preset_file_name, false)
         .ok_or(CoreError::UserHomeNotFound)?;
-    if !fs::try_exists(&preset_path).await.unwrap_or_default() {
-        return Err(CoreError::PresetNotFound);
-    }
-    let preset_toml = fs::read_to_string(preset_path).await?;
+    let preset_toml = match fs::try_exists(&preset_path).await.unwrap_or_default() {
+        true => fs::read_to_string(preset_path).await?,
+        false => std::str::from_utf8(
+            &BuiltInPresets::get(&preset_file_name)
+                .ok_or(CoreError::PresetNotFound)?
+                .data,
+        )?
+        .to_string(),
+    };
     Ok(toml::from_str(&preset_toml)?)
 }
 
-const META_JSON_FILENAME: &str = "meta.json";
-
-#[derive(Default, Serialize, Deserialize)]
-struct GenerationThreadMeta {
-    last_id: u64,
-    thread_ids_to_timestamps: HashMap<u64, u64>,
+fn thread_path(id: &str) -> Result<PathBuf> {
+    get_file_path(DirType::Threads, &format!("{}.json", id), true)
+        .ok_or(CoreError::UserHomeNotFound)
 }
 
-pub struct GenerationThreadManager {
-    meta: Option<GenerationThreadMeta>,
+async fn clean_old_threads_in_dir(directory: &Path, ttl_secs: u64) -> Result<()> {
+    let expiry_time = current_timestamp_secs() - ttl_secs;
+    if let Ok(mut dir_entries) = fs::read_dir(directory).await {
+        while let Some(entry) = dir_entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension() != Some("json".as_ref()) {
+                continue;
+            }
+            let file_name = path.file_stem().unwrap().to_str().unwrap();
+            if let Ok(timestamp) = file_name
+                .split("_")
+                .nth(1)
+                .unwrap_or_default()
+                .parse::<u64>()
+            {
+                if timestamp < expiry_time {
+                    fs::remove_file(path).await?;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
-
-impl GenerationThreadManager {
-    // Rewrite this func to
-    pub async fn new() -> Result<Self> {
-        let mut new_self = Self { meta: None };
-        let meta_path = Self::meta_path()?;
-        if !fs::try_exists(&meta_path).await.unwrap_or_default() {
-            return Ok(new_self);
-        }
-        new_self.meta = Some(serde_json::from_slice(&fs::read(&meta_path).await?)?);
-        Ok(new_self)
+async fn clean_old_threads(ttl_secs: u64) -> Result<()> {
+    if let Some(project_dir) = get_project_dir() {
+        clean_old_threads_in_dir(&project_dir.join(DirType::Threads.to_string()), ttl_secs).await?;
     }
-
-    fn meta_path() -> Result<PathBuf> {
-        get_file_path(DirType::Threads, META_JSON_FILENAME, true).ok_or(CoreError::UserHomeNotFound)
-    }
-
-    fn thread_path(id: u64) -> Result<PathBuf> {
-        get_file_path(DirType::Threads, &format!("thread_{}.json", id), true)
-            .ok_or(CoreError::UserHomeNotFound)
-    }
-
-    fn check_thread_exists(&self, thread_id: &u64) -> Result<()> {
-        if !self
-            .meta
-            .as_ref()
-            .map(|m| m.thread_ids_to_timestamps.contains_key(thread_id))
-            .unwrap_or_default()
-        {
-            return Err(CoreError::ThreadNotFound);
-        }
-        Ok(())
-    }
-
-    pub async fn clean_old_threads(&mut self, ttl_secs: u64) -> Result<()> {
-        if let Some(meta) = self.meta.as_ref() {
-            let mut purged_thread_ids = Vec::with_capacity(meta.thread_ids_to_timestamps.len());
-            let current_timestamp_secs = current_timestamp_secs();
-            for (id, timestamp_secs) in &meta.thread_ids_to_timestamps {
-                if current_timestamp_secs > *timestamp_secs
-                    && (current_timestamp_secs - timestamp_secs) <= ttl_secs
-                {
-                    continue;
-                }
-                if let Err(e) = fs::remove_file(&Self::thread_path(*id)?).await {
-                    match e.kind() {
-                        io::ErrorKind::NotFound => (),
-                        _ => return Err(e.into()),
-                    };
-                }
-                purged_thread_ids.push(*id);
-            }
-            let meta = self.meta.as_mut().unwrap();
-            for id in purged_thread_ids {
-                meta.thread_ids_to_timestamps.remove(&id);
-            }
-            let meta_json = serde_json::to_vec(meta)?;
-            fs::write(Self::meta_path()?, meta_json).await?;
-        }
-        Ok(())
-    }
-
-    pub async fn new_thread_id(&mut self) -> Result<u64> {
-        let meta = self.meta.get_or_insert_with(|| Default::default());
-
-        let new_id = meta.last_id + 1;
-        meta.last_id = new_id;
-        meta.thread_ids_to_timestamps
-            .insert(new_id, current_timestamp_secs());
-
-        let meta_json = serde_json::to_vec(meta)?;
-        fs::write(Self::meta_path()?, meta_json).await?;
-        fs::write(Self::thread_path(new_id)?, "[]").await?;
-
-        Ok(new_id)
-    }
-
-    pub async fn save_thread(&self, thread_id: u64, messages: Vec<Message>) -> Result<()> {
-        self.check_thread_exists(&thread_id)?;
-        let thread_path = Self::thread_path(thread_id)?;
-
-        fs::write(thread_path, serde_json::to_vec(&messages)?).await?;
-        Ok(())
-    }
-
-    pub async fn get_thread_messages(&self, thread_id: u64) -> Result<Vec<Message>> {
-        self.check_thread_exists(&thread_id)?;
-        let thread_path = Self::thread_path(thread_id)?;
-        Ok(
-            match fs::try_exists(&thread_path).await.unwrap_or_default() {
-                true => serde_json::from_slice(&fs::read(&thread_path).await?)?,
-                false => Vec::new(),
-            },
+    if let Some(home_dirs) = get_home_dirs() {
+        clean_old_threads_in_dir(
+            &home_dirs.data_dir().join(DirType::Threads.to_string()),
+            ttl_secs,
         )
+        .await?;
     }
+    Ok(())
+}
 
-    pub fn get_thread_ids(&self) -> Option<Vec<u64>> {
-        self.meta
-            .as_ref()
-            .map(|m| m.thread_ids_to_timestamps.keys().cloned().collect())
-    }
+fn new_thread_id() -> String {
+    let suffix: String = thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(5)
+        .map(char::from)
+        .collect();
+    let timestamp = current_timestamp_secs();
+    format!("{}-{}", timestamp, suffix)
+}
+
+async fn save_thread(thread_id: &str, messages: Vec<Message>) -> Result<()> {
+    let thread_path = thread_path(thread_id)?;
+
+    fs::write(thread_path, serde_json::to_vec(&messages)?).await?;
+    Ok(())
+}
+
+pub async fn get_thread_messages(thread_id: &str) -> Result<Vec<Message>> {
+    let thread_path = thread_path(thread_id)?;
+    Ok(
+        match fs::try_exists(&thread_path).await.unwrap_or_default() {
+            true => serde_json::from_slice(&fs::read(&thread_path).await?)?,
+            false => Vec::new(),
+        },
+    )
+}
+
+#[derive(Deserialize)]
+pub struct LLMVMCoreConfig {
+    pub tracing_directive: Option<String>,
+    pub bin_path: Option<String>,
+    pub ttl_secs: Option<u64>,
 }
 
 pub struct LLMVMCore {
-    thread_manager: Mutex<GenerationThreadManager>,
     stdio_clients:
         Mutex<HashMap<String, Arc<Mutex<Timeout<StdioClient<BackendRequest, BackendResponse>>>>>>,
     raw_clients: Mutex<HashMap<String, Arc<Mutex<Box<dyn Backend>>>>>,
-    backend_bin_path: Option<String>,
+    config: LLMVMCoreConfig,
 }
 
 impl LLMVMCore {
-    pub async fn new(backend_bin_path: Option<String>) -> Result<Self> {
+    pub async fn new(config: LLMVMCoreConfig) -> Result<Self> {
+        clean_old_threads(config.ttl_secs.unwrap_or(DEFAULT_TTL_SECS)).await?;
         Ok(Self {
-            thread_manager: Mutex::new(GenerationThreadManager::new().await?),
             stdio_clients: Mutex::new(HashMap::new()),
             raw_clients: Mutex::new(HashMap::new()),
-            backend_bin_path,
+            config,
         })
     }
 
@@ -371,16 +341,14 @@ impl LLMVMCore {
         let mut stdio_clients_guard = self.stdio_clients.lock().await;
         let client = match stdio_clients_guard.get(&request.model) {
             None => {
+                let bin_path = self.config.bin_path.as_ref().map(|v| v.as_str());
+                debug!("starting backend {command} in {bin_path:?}");
                 stdio_clients_guard.insert(
                     request.model.to_string(),
                     Arc::new(Mutex::new(
-                        StdioClient::new(
-                            self.backend_bin_path.as_ref().map(|v| v.as_str()),
-                            &command,
-                            &[],
-                        )
-                        .await
-                        .map_err(|e| CoreError::BackendStart(e))?,
+                        StdioClient::new(bin_path, &command, &[])
+                            .await
+                            .map_err(|e| CoreError::BackendStart(e))?,
                     )),
                 );
                 stdio_clients_guard.get(&request.model).unwrap()
@@ -486,14 +454,8 @@ impl Core for LLMVMCore {
                 },
             };
 
-            let mut thread_messages = match request.existing_thread_id.clone() {
-                Some(thread_id) => Some(
-                    self.thread_manager
-                        .lock()
-                        .await
-                        .get_thread_messages(thread_id)
-                        .await?,
-                ),
+            let mut thread_messages = match request.existing_thread_id.as_ref() {
+                Some(thread_id) => Some(get_thread_messages(thread_id).await?),
                 None => None,
             };
             if let Some(content) = prompt.system_prompt {
@@ -546,15 +508,8 @@ impl Core for LLMVMCore {
                     role: MessageRole::Assistant,
                     content: response.response.clone(),
                 });
-                let thread_id = match request.existing_thread_id {
-                    Some(id) => id,
-                    None => self.thread_manager.lock().await.new_thread_id().await?,
-                };
-                self.thread_manager
-                    .lock()
-                    .await
-                    .save_thread(thread_id, thread_messages)
-                    .await?;
+                let thread_id = request.existing_thread_id.unwrap_or_else(new_thread_id);
+                save_thread(&thread_id, thread_messages).await?;
                 Some(thread_id)
             } else {
                 None

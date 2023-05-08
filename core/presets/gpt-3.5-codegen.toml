@@ -1,0 +1,3 @@
+model = "outsource/openai-chat/gpt-3.5-turbo"
+prompt_template_id = "codegen"
+max_tokens = 2048

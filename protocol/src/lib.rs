@@ -106,14 +106,14 @@ pub struct GenerationParameters {
 pub struct GenerationRequest {
     pub preset_id: Option<String>,
     pub parameters: Option<GenerationParameters>,
-    pub existing_thread_id: Option<u64>,
+    pub existing_thread_id: Option<String>,
     pub save_thread: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationResponse {
     pub response: String,
-    pub thread_id: Option<u64>,
+    pub thread_id: Option<String>,
 }
 
 pub struct ModelDescription {

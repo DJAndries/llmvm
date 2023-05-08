@@ -114,7 +114,7 @@ impl LspInterceptor {
             request_params.range,
         ))?]);
         result.push(CodeActionOrCommand::Command(Command {
-            title: "Complete code via LLM (openai/gpt-3.5-turbo)".to_string(),
+            title: "Complete code via LLM".to_string(),
             command: CODE_COMPLETE_COMMAND_ID.to_string(),
             arguments: location_args.clone(),
         }));
@@ -161,9 +161,7 @@ impl LspInterceptor {
                 task_id,
                 random_context_locations,
             );
-            if let Err(e) = code_complete.run().await {
-                error!("code complete task failed: {}", e);
-            }
+            code_complete.run().await.ok();
         });
         Ok(())
     }

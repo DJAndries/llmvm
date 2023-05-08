@@ -1,7 +1,7 @@
 use std::{process::exit, sync::Arc};
 
 use clap::{arg, command, Args, Parser, Subcommand};
-use llmvm_core::LLMVMCore;
+use llmvm_core::{LLMVMCore, LLMVMCoreConfig};
 use llmvm_protocol::{
     stdio::{CoreService, StdioServer},
     Core, GenerationParameters, GenerationRequest,
@@ -42,7 +42,7 @@ pub struct GenerateArgs {
     model_parameters_preset_id: Option<String>,
 
     #[arg(long)]
-    existing_thread_id: Option<u64>,
+    existing_thread_id: Option<String>,
 
     #[arg(long)]
     save_thread: bool,
@@ -51,16 +51,9 @@ pub struct GenerateArgs {
     max_tokens: u64,
 }
 
-#[derive(Deserialize)]
-pub struct CliConfigContent {
-    tracing_directive: Option<String>,
-
-    bin_path: Option<String>,
-}
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let config: CliConfigContent = match load_config(CONFIG_FILENAME) {
+    let config: LLMVMCoreConfig = match load_config(CONFIG_FILENAME) {
         Ok(config) => config,
         Err(e) => {
             eprintln!("failed to load config: {}", e);
@@ -79,7 +72,7 @@ async fn main() -> std::io::Result<()> {
         },
     );
 
-    let core = Arc::new(match LLMVMCore::new(config.bin_path).await {
+    let core = Arc::new(match LLMVMCore::new(config).await {
         Ok(core) => core,
         Err(e) => {
             eprintln!("failed to init core: {}", e);

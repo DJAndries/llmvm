@@ -29,7 +29,7 @@ use lsp_types::{
 use serde::Serialize;
 use tokio::{sync::Mutex, task::JoinError};
 use tower::{buffer::Buffer, timeout::Timeout, util::Ready, Service, ServiceExt};
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::{
     content::ContentManager,
@@ -109,10 +109,11 @@ pub struct CodeCompleteTask {
 
     task_id: usize,
     random_context_locations: Vec<Location>,
+
+    notify_complete_status: Arc<Mutex<bool>>,
 }
 
 impl CodeCompleteTask {
-    // TODO: add optional custom prompt
     pub fn new(
         config: Arc<CodeAssistConfig>,
         llmvm_core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
@@ -145,6 +146,7 @@ impl CodeCompleteTask {
             code_location,
             task_id,
             random_context_locations,
+            notify_complete_status: Default::default(),
         }
     }
     fn extract_preset_list(&self, main_snippet: &mut String) -> Vec<String> {
@@ -175,7 +177,6 @@ impl CodeCompleteTask {
     }
 
     async fn get_relevant_symbol_positions(&mut self) -> Result<Vec<DescribedPosition>> {
-        // TODO: guess the relevant symbols for LSP servers that don't support semantic tokens
         let symbols_response = self
             .passthrough_service
             .call(LspMessageInfo::new(
@@ -451,9 +452,13 @@ impl CodeCompleteTask {
         Ok(token)
     }
 
-    async fn notify_user(&mut self, token: &ProgressToken, is_complete: bool) -> Result<()> {
-        let progresses = match is_complete {
-            false => vec![
+    async fn notify_user(
+        &mut self,
+        token: &ProgressToken,
+        complete_result: Option<Result<()>>,
+    ) -> Result<()> {
+        let progresses = match complete_result.as_ref() {
+            None => vec![
                 WorkDoneProgress::Begin(WorkDoneProgressBegin {
                     title: "Text Generation".to_string(),
                     message: Some("Starting generation".to_string()),
@@ -466,22 +471,38 @@ impl CodeCompleteTask {
                     ..Default::default()
                 }),
             ],
-            true => vec![
-                WorkDoneProgress::Report(WorkDoneProgressReport {
-                    message: Some("Generation complete".to_string()),
-                    cancellable: Some(false),
-                    ..Default::default()
-                }),
-                WorkDoneProgress::End(WorkDoneProgressEnd {
-                    message: Some("Generation complete".to_string()),
-                }),
-            ],
+            Some(complete_result) => {
+                *self.notify_complete_status.lock().await = true;
+                let message = match complete_result {
+                    Ok(()) => "Generation complete".to_string(),
+                    Err(e) => format!("Generation failed: {e}"),
+                };
+                vec![
+                    WorkDoneProgress::Report(WorkDoneProgressReport {
+                        message: Some(message.clone()),
+                        cancellable: Some(false),
+                        ..Default::default()
+                    }),
+                    WorkDoneProgress::End(WorkDoneProgressEnd {
+                        message: Some(message),
+                    }),
+                ]
+            }
         };
         for (i, progress) in progresses.into_iter().enumerate() {
             let mut passthrough_service = self.passthrough_service.clone();
             let token = token.clone();
+            let notify_complete_status = match complete_result.is_some() {
+                false => Some(self.notify_complete_status.clone()),
+                true => None,
+            };
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(i as u64)).await;
+                if let Some(status) = notify_complete_status {
+                    if *status.lock().await {
+                        return;
+                    }
+                }
                 passthrough_service
                     .call(LspMessageInfo::new(
                         LspMessage::new_notification::<Progress>(ProgressParams {
@@ -548,9 +569,7 @@ impl CodeCompleteTask {
         Ok(())
     }
 
-    pub async fn run(mut self) -> Result<()> {
-        let progress_token = self.create_progress_token().await?;
-
+    pub async fn process(&mut self) -> Result<()> {
         self.content_manager
             .lock()
             .await
@@ -596,8 +615,6 @@ impl CodeCompleteTask {
         debug!("main snippet: {:#?}", main_snippet);
         debug!("presets: {:#?}", presets);
 
-        self.notify_user(&progress_token, false).await?;
-
         let prompt_params = PromptParameters {
             lang: self
                 .content_manager
@@ -629,8 +646,19 @@ impl CodeCompleteTask {
 
         self.apply_edit(completed_snippets).await?;
 
-        self.notify_user(&progress_token, true).await?;
+        Ok(())
+    }
 
+    pub async fn run(mut self) -> Result<()> {
+        let progress_token = self.create_progress_token().await?;
+        self.notify_user(&progress_token, None).await?;
+
+        let result = self.process().await;
+        if let Err(e) = result.as_ref() {
+            error!("code complete task failed: {}", e);
+        }
+
+        self.notify_user(&progress_token, Some(result)).await?;
         Ok(())
     }
 }

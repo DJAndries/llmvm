@@ -1,0 +1,3 @@
+model = "outsource/huggingface-text/gpt2"
+prompt_template_id = "codegen"
+max_tokens = 249
