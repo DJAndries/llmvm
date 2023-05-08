@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
+futures = "0.3"
 llmvm-protocol = { path = "../../protocol" }
 llmvm-util = { path = "../../util", features = ["config", "logging"] }
 lsp-types = "0.94"

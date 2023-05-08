@@ -4,7 +4,7 @@ use clap::{arg, command, Args, Parser, Subcommand};
 use llmvm_core::LLMVMCore;
 use llmvm_protocol::{
     stdio::{CoreService, StdioServer},
-    Core, GenerationRequest,
+    Core, GenerationParameters, GenerationRequest,
 };
 use llmvm_util::config::load_config;
 use llmvm_util::logging::setup_subscriber;
@@ -90,13 +90,15 @@ async fn main() -> std::io::Result<()> {
     match cli.command {
         CoreCommand::Generate(args) => {
             let request = GenerationRequest {
-                model: args.model,
-                prompt_template_id: None,
-                custom_prompt_template: Some(args.prompt),
-                max_tokens: args.max_tokens,
-                model_parameters_preset_id: args.model_parameters_preset_id,
-                model_parameters: None,
-                prompt_parameters: Default::default(),
+                preset_id: None,
+                parameters: Some(GenerationParameters {
+                    model: Some(args.model),
+                    prompt_template_id: None,
+                    custom_prompt_template: Some(args.prompt),
+                    max_tokens: Some(args.max_tokens),
+                    model_parameters: None,
+                    prompt_parameters: None,
+                }),
                 existing_thread_id: args.existing_thread_id,
                 save_thread: args.save_thread,
             };

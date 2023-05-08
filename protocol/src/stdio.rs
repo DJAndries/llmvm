@@ -38,6 +38,8 @@ use crate::{
 };
 
 const STDIO_COMMAND_TIMEOUT_SECS: u64 = 900;
+const GENERATION_METHOD: &str = "generation";
+const INIT_PROJECT_METHOD: &str = "init_project";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum BackendRequest {
@@ -111,10 +113,10 @@ impl TryFrom<JsonRpcRequest> for CoreRequest {
 
     fn try_from(value: JsonRpcRequest) -> Result<Self, StdioError> {
         match value.method.as_str() {
-            "generation" => Ok(CoreRequest::Generation(parse_request_from_jsonrpc_request(
+            GENERATION_METHOD => Ok(CoreRequest::Generation(parse_request_from_jsonrpc_request(
                 value,
             )?)),
-            "init_project" => Ok(CoreRequest::InitProject),
+            INIT_PROJECT_METHOD => Ok(CoreRequest::InitProject),
             _ => Err(StdioError {
                 error_type: ProtocolErrorType::BadRequest,
                 description: "unknown request type".to_string(),
@@ -125,11 +127,11 @@ impl TryFrom<JsonRpcRequest> for CoreRequest {
 impl Into<JsonRpcRequest> for CoreRequest {
     fn into(self) -> JsonRpcRequest {
         let (method, params) = match self {
-            CoreRequest::Generation(generation_response) => (
-                "generation",
-                Some(serde_json::to_value(generation_response).unwrap()),
+            CoreRequest::Generation(request) => (
+                GENERATION_METHOD,
+                Some(serde_json::to_value(request).unwrap()),
             ),
-            CoreRequest::InitProject => ("init_project", None),
+            CoreRequest::InitProject => (INIT_PROJECT_METHOD, None),
         };
         JsonRpcRequest::new(method.to_string(), params)
     }
@@ -166,7 +168,7 @@ impl TryFrom<JsonRpcRequest> for BackendRequest {
 
     fn try_from(value: JsonRpcRequest) -> Result<Self, StdioError> {
         match value.method.as_str() {
-            "generation" => Ok(BackendRequest::Generation(
+            GENERATION_METHOD => Ok(BackendRequest::Generation(
                 parse_request_from_jsonrpc_request(value)?,
             )),
             _ => Err(StdioError {
@@ -180,7 +182,7 @@ impl Into<JsonRpcRequest> for BackendRequest {
     fn into(self) -> JsonRpcRequest {
         let (method, params) = match self {
             BackendRequest::Generation(generation_response) => (
-                "generation",
+                GENERATION_METHOD,
                 Some(serde_json::to_value(generation_response).unwrap()),
             ),
         };
@@ -408,7 +410,7 @@ where
             let value: Value = serde_json::from_str(&serialized_request).unwrap_or_default();
             let (result, id) = match JsonRpcMessage::try_from(value) {
                 Err(e) => {
-                    error!("could not parse json rpc message from client: {e}");
+                    error!("could not parse json rpc message from client: {e}, request: {serialized_request}");
                     return;
                 }
                 Ok(message) => match message {
@@ -457,7 +459,9 @@ where
             let mut serialized_request = String::new();
             tokio::select! {
                 read_result = self.stdin.read_line(&mut serialized_request) => {
-                    read_result?;
+                    if read_result? == 0 {
+                        break;
+                    }
                     self.handle_request(serialized_request);
                 },
                 message = self.message_rx.recv() => if let Some(message) = message {
@@ -465,6 +469,7 @@ where
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -490,6 +495,20 @@ where
     _child: Arc<Child>,
     to_child_tx: UnboundedSender<ClientRequestTrx<Request, Response>>,
     notification_recv_link_tx: UnboundedSender<NotificationReceiveLink>,
+}
+
+impl<Request, Response> Clone for StdioClient<Request, Response>
+where
+    Request: Into<JsonRpcRequest> + Clone + Send + 'static,
+    Response: ResponseConvert<Request, Response> + Send + 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            _child: self._child.clone(),
+            to_child_tx: self.to_child_tx.clone(),
+            notification_recv_link_tx: self.notification_recv_link_tx.clone(),
+        }
+    }
 }
 
 impl<Request, Response> Service<Request> for StdioClient<Request, Response>

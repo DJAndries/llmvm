@@ -93,14 +93,19 @@ pub struct BackendGenerationResponse {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GenerationRequest {
-    pub model: String,
+pub struct GenerationParameters {
+    pub model: Option<String>,
     pub prompt_template_id: Option<String>,
     pub custom_prompt_template: Option<String>,
-    pub max_tokens: u64,
+    pub max_tokens: Option<u64>,
     pub model_parameters: Option<Map<String, Value>>,
-    pub model_parameters_preset_id: Option<String>,
-    pub prompt_parameters: Value,
+    pub prompt_parameters: Option<Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GenerationRequest {
+    pub preset_id: Option<String>,
+    pub parameters: Option<GenerationParameters>,
     pub existing_thread_id: Option<u64>,
     pub save_thread: bool,
 }

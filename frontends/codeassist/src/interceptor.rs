@@ -26,8 +26,6 @@ use crate::{
     CodeAssistConfig,
 };
 
-const CORE_SERVICE_REQUEST_BOUND: usize = 32;
-
 pub struct LspInterceptor {
     config: Arc<CodeAssistConfig>,
 
@@ -37,7 +35,7 @@ pub struct LspInterceptor {
     passthrough_service: LspMessageService,
     server_capabilities: Option<Arc<ServerCapabilities>>,
 
-    llmvm_core_service: Buffer<Timeout<StdioClient<CoreRequest, CoreResponse>>, CoreRequest>,
+    llmvm_core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
 
     root_uri: Option<Url>,
     complete_task_last_id: usize,
@@ -60,7 +58,7 @@ impl LspInterceptor {
             service_tx: Some(service_tx),
             passthrough_service,
             server_capabilities: None,
-            llmvm_core_service: Buffer::new(llmvm_core_service, CORE_SERVICE_REQUEST_BOUND),
+            llmvm_core_service,
             root_uri: None,
             complete_task_last_id: 0,
             content_manager: Default::default(),

@@ -8,8 +8,9 @@ use llmvm_protocol::stdio::{BackendRequest, BackendResponse, StdioClient, StdioE
 use llmvm_protocol::tower::timeout::Timeout;
 use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
-    Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
-    GenerationResponse, Message, MessageRole, ModelDescription, ProtocolError, ProtocolErrorType,
+    Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationParameters,
+    GenerationRequest, GenerationResponse, Message, MessageRole, ModelDescription, ProtocolError,
+    ProtocolErrorType,
 };
 use llmvm_util::{get_file_path, DirType};
 use rust_embed::RustEmbed;
@@ -54,6 +55,8 @@ pub enum CoreError {
     UserHomeNotFound,
     #[error("json serialization error: {0}")]
     JsonSerialization(#[from] serde_json::Error),
+    #[error("toml serialization error: {0}")]
+    TomlSerialization(#[from] toml::de::Error),
     #[error("thread not found")]
     ThreadNotFound,
     #[error("preset not found")]
@@ -66,6 +69,10 @@ pub enum CoreError {
     Protocol(#[from] ProtocolError),
     #[error("tempate render error: {0}")]
     TemplateRender(#[from] RenderError),
+    #[error("missing generation parameters")]
+    MissingParameters,
+    #[error("missing required generation parameter: {0}")]
+    MissingParameter(&'static str),
 }
 
 impl Into<ProtocolError> for CoreError {
@@ -76,13 +83,16 @@ impl Into<ProtocolError> for CoreError {
             CoreError::TemplateNotFound => ProtocolErrorType::BadRequest,
             CoreError::Utf8Error(_) => ProtocolErrorType::BadRequest,
             CoreError::UserHomeNotFound => ProtocolErrorType::Internal,
-            CoreError::JsonSerialization { .. } => ProtocolErrorType::BadRequest,
+            CoreError::JsonSerialization(_) => ProtocolErrorType::BadRequest,
+            CoreError::TomlSerialization(_) => ProtocolErrorType::BadRequest,
             CoreError::ThreadNotFound => ProtocolErrorType::BadRequest,
             CoreError::PresetNotFound => ProtocolErrorType::BadRequest,
             CoreError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
             CoreError::BackendStdio(error) => error.error_type.clone(),
             CoreError::Protocol(error) => error.error_type.clone(),
             CoreError::TemplateRender(_) => ProtocolErrorType::BadRequest,
+            CoreError::MissingParameters => ProtocolErrorType::BadRequest,
+            CoreError::MissingParameter(_) => ProtocolErrorType::BadRequest,
         };
         ProtocolError {
             error_type,
@@ -130,6 +140,10 @@ impl SystemRoleHelperState {
 #[derive(RustEmbed)]
 #[folder = "./prompts"]
 struct BuiltInPrompts;
+
+#[derive(RustEmbed)]
+#[folder = "./presets"]
+struct BuiltInPresets;
 
 #[derive(Debug)]
 pub struct ReadyPrompt {
@@ -202,15 +216,15 @@ impl ReadyPrompt {
     }
 }
 
-pub async fn load_preset(preset_id: &str) -> Result<Map<String, Value>> {
-    let preset_file_name = format!("{}.json", preset_id);
+pub async fn load_preset(preset_id: &str) -> Result<GenerationParameters> {
+    let preset_file_name = format!("{}.toml", preset_id);
     let preset_path = get_file_path(DirType::Presets, &preset_file_name, false)
         .ok_or(CoreError::UserHomeNotFound)?;
     if !fs::try_exists(&preset_path).await.unwrap_or_default() {
         return Err(CoreError::PresetNotFound);
     }
-    let preset_json = fs::read(preset_path).await?;
-    Ok(serde_json::from_slice(&preset_json)?)
+    let preset_toml = fs::read_to_string(preset_path).await?;
+    Ok(toml::from_str(&preset_toml)?)
 }
 
 const META_JSON_FILENAME: &str = "meta.json";
@@ -391,30 +405,79 @@ impl LLMVMCore {
     }
 }
 
+fn merge_generation_parameters(
+    preset_parameters: GenerationParameters,
+    mut request_parameters: GenerationParameters,
+) -> GenerationParameters {
+    GenerationParameters {
+        model: request_parameters.model.or(preset_parameters.model),
+        prompt_template_id: request_parameters
+            .prompt_template_id
+            .or(preset_parameters.prompt_template_id),
+        custom_prompt_template: request_parameters
+            .custom_prompt_template
+            .or(preset_parameters.custom_prompt_template),
+        max_tokens: request_parameters
+            .max_tokens
+            .or(preset_parameters.max_tokens),
+        model_parameters: preset_parameters
+            .model_parameters
+            .map(|mut parameters| {
+                parameters.extend(
+                    request_parameters
+                        .model_parameters
+                        .take()
+                        .unwrap_or_default(),
+                );
+                parameters
+            })
+            .or(request_parameters.model_parameters),
+        prompt_parameters: request_parameters
+            .prompt_parameters
+            .or(preset_parameters.prompt_parameters),
+    }
+}
+
 #[llmvm_protocol::async_trait]
 impl Core for LLMVMCore {
     async fn generate(
         &self,
-        mut request: GenerationRequest,
+        request: GenerationRequest,
     ) -> std::result::Result<GenerationResponse, ProtocolError> {
         async {
-            let model_description = ModelDescription::from_str(request.model.as_str())
-                .map_err(|_| CoreError::ModelDescriptionParse)?;
-            let is_chat_model = model_description.is_chat_model();
-            let mut prompt = match request.custom_prompt_template.take() {
-                Some(template) => {
-                    ReadyPrompt::from_custom_template(
-                        &template,
-                        &request.prompt_parameters,
-                        is_chat_model,
-                    )
-                    .await?
+            let parameters = match request.preset_id {
+                Some(preset_id) => {
+                    let mut parameters = load_preset(&preset_id).await?;
+                    if let Some(request_parameters) = request.parameters {
+                        parameters = merge_generation_parameters(parameters, request_parameters);
+                    }
+                    parameters
                 }
-                None => match request.prompt_template_id.take() {
+                None => request.parameters.ok_or(CoreError::MissingParameters)?,
+            };
+            debug!("generation parameters: {:?}", parameters);
+
+            let model = parameters
+                .model
+                .ok_or(CoreError::MissingParameter("model"))?;
+            let model_description =
+                ModelDescription::from_str(&model).map_err(|_| CoreError::ModelDescriptionParse)?;
+
+            let is_chat_model = model_description.is_chat_model();
+            let prompt_parameters = parameters
+                .prompt_parameters
+                .unwrap_or(Value::Object(Default::default()));
+
+            let prompt = match parameters.custom_prompt_template {
+                Some(template) => {
+                    ReadyPrompt::from_custom_template(&template, &prompt_parameters, is_chat_model)
+                        .await?
+                }
+                None => match parameters.prompt_template_id {
                     Some(template_id) => {
                         ReadyPrompt::from_stored_template(
                             &template_id,
-                            &request.prompt_parameters,
+                            &prompt_parameters,
                             is_chat_model,
                         )
                         .await?
@@ -433,7 +496,7 @@ impl Core for LLMVMCore {
                 ),
                 None => None,
             };
-            if let Some(content) = prompt.system_prompt.take() {
+            if let Some(content) = prompt.system_prompt {
                 thread_messages
                     .get_or_insert_with(|| Vec::with_capacity(1))
                     .push(Message {
@@ -454,24 +517,14 @@ impl Core for LLMVMCore {
                 false => None,
             };
 
-            let mut model_parameters = match request.model_parameters_preset_id {
-                Some(id) => Some(load_preset(&id).await?),
-                None => None,
-            };
-
-            if let Some(explicit_parameters) = request.model_parameters {
-                match model_parameters.as_mut() {
-                    Some(preset_parameters) => preset_parameters.extend(explicit_parameters),
-                    None => model_parameters = Some(explicit_parameters),
-                };
-            }
-
             let backend_request = BackendGenerationRequest {
-                model: request.model,
+                model,
                 prompt: prompt.main_prompt,
-                max_tokens: request.max_tokens,
+                max_tokens: parameters
+                    .max_tokens
+                    .ok_or(CoreError::MissingParameter("max_tokens"))?,
                 thread_messages,
-                model_parameters,
+                model_parameters: parameters.model_parameters,
             };
 
             info!(

@@ -6,9 +6,10 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Result};
+use futures::future::join_all;
 use llmvm_protocol::{
     stdio::{CoreRequest, CoreResponse, StdioClient},
-    GenerationRequest,
+    GenerationParameters, GenerationRequest,
 };
 use lsp_types::{
     notification::{Progress, ShowMessage},
@@ -26,7 +27,7 @@ use lsp_types::{
     WorkDoneProgressReport, WorkspaceEdit,
 };
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, task::JoinError};
 use tower::{buffer::Buffer, timeout::Timeout, util::Ready, Service, ServiceExt};
 use tracing::debug;
 
@@ -38,6 +39,7 @@ use crate::{
 };
 
 const PROGRESS_TOKEN_PREFIX: &str = "llmvm/complete/";
+const PRESET_LIST_PREFIX: &str = "ccpr=";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct HashableLocation(pub Location);
@@ -63,18 +65,24 @@ struct DescribedPosition {
     description: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct ContextSnippet {
     descriptions: Option<String>,
     snippet: String,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Clone, Serialize)]
 struct PromptParameters {
     lang: String,
     typedef_context_snippets: Vec<ContextSnippet>,
     random_context_snippets: Vec<ContextSnippet>,
     main_snippet: String,
+}
+
+#[derive(Debug)]
+struct CompletedSnippet {
+    preset: String,
+    snippet: String,
 }
 
 impl From<FoldingRange> for SimpleFoldingRange {
@@ -88,9 +96,8 @@ impl From<FoldingRange> for SimpleFoldingRange {
 
 pub struct CodeCompleteTask {
     config: Arc<CodeAssistConfig>,
-    // TODO: remove buffer once json-rpc is used in protocol
-    // just clone the service directly instead
-    llmvm_core_service: Buffer<Timeout<StdioClient<CoreRequest, CoreResponse>>, CoreRequest>,
+
+    llmvm_core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
     passthrough_service: LspMessageService,
     root_uri: Option<Url>,
     supports_semantic_tokens: bool,
@@ -108,7 +115,7 @@ impl CodeCompleteTask {
     // TODO: add optional custom prompt
     pub fn new(
         config: Arc<CodeAssistConfig>,
-        llmvm_core_service: Buffer<Timeout<StdioClient<CoreRequest, CoreResponse>>, CoreRequest>,
+        llmvm_core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
         passthrough_service: LspMessageService,
         server_capabilities: Option<&ServerCapabilities>,
         root_uri: Option<Url>,
@@ -139,6 +146,32 @@ impl CodeCompleteTask {
             task_id,
             random_context_locations,
         }
+    }
+    fn extract_preset_list(&self, main_snippet: &mut String) -> Vec<String> {
+        let mut is_present = false;
+        let preset_list = main_snippet
+            .find(PRESET_LIST_PREFIX)
+            .map(|start_index| {
+                is_present = true;
+                let start_index = start_index + PRESET_LIST_PREFIX.len();
+                let end_index = main_snippet[start_index..]
+                    .find(char::is_whitespace)
+                    .map(|wp_index| start_index + wp_index)
+                    .unwrap_or(main_snippet.len());
+
+                let substr = &main_snippet[start_index..end_index];
+                substr.split(',').map(|s| s.trim().to_string()).collect()
+            })
+            .unwrap_or_else(|| vec![self.config.default_preset.clone()]);
+        // remove preset list from snippet so it doesn't feed into llm
+        if is_present {
+            *main_snippet = main_snippet
+                .lines()
+                .filter(|l| !l.contains(PRESET_LIST_PREFIX))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        preset_list
     }
 
     async fn get_relevant_symbol_positions(&mut self) -> Result<Vec<DescribedPosition>> {
@@ -375,40 +408,27 @@ impl CodeCompleteTask {
     }
 
     async fn send_generation_request(
-        &mut self,
-        typedef_context_snippets: Vec<ContextSnippet>,
-        random_context_snippets: Vec<ContextSnippet>,
-        main_snippet: String,
-    ) -> Result<String> {
-        let prompt_params = PromptParameters {
-            lang: self
-                .content_manager
-                .lock()
-                .await
-                .get_lang_id(&self.code_location.uri),
-            typedef_context_snippets,
-            random_context_snippets,
-            main_snippet,
-        };
-        let core_service = Ready::new(&mut self.llmvm_core_service)
-            .await
-            .expect("llmvm service buffer should not be full");
+        mut core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
+        preset: String,
+        prompt_params: PromptParameters,
+    ) -> Result<CompletedSnippet> {
         let response = core_service
             .call(CoreRequest::Generation(GenerationRequest {
-                model: "outsource/openai-chat/gpt-3.5-turbo".to_string(),
-                prompt_template_id: Some("codegen".to_string()),
-                custom_prompt_template: None,
-                max_tokens: 2048,
-                model_parameters: None,
-                model_parameters_preset_id: None,
-                prompt_parameters: serde_json::to_value(prompt_params)?,
+                parameters: Some(GenerationParameters {
+                    prompt_parameters: Some(serde_json::to_value(prompt_params)?),
+                    ..Default::default()
+                }),
                 existing_thread_id: None,
                 save_thread: false,
+                preset_id: Some(preset.clone()),
             }))
             .await
             .map_err(|e| anyhow!(e))??;
         match response {
-            CoreResponse::Generation(response) => Ok(response.response),
+            CoreResponse::Generation(response) => Ok(CompletedSnippet {
+                preset,
+                snippet: response.response,
+            }),
             _ => bail!("unexpected response from llmvm"),
         }
     }
@@ -484,22 +504,35 @@ impl CodeCompleteTask {
         format!("{}\n{}\n{}\n", top_line, snippet, bottom_line)
     }
 
-    async fn apply_edit(&mut self, completed_snippet: String) -> Result<()> {
-        let completed_snippet = completed_snippet
-            .split("\n")
-            .filter(|line| !line.starts_with("```"))
-            .collect::<Vec<&str>>()
-            .join("\n");
+    async fn apply_edit(&mut self, completed_snippets: Vec<CompletedSnippet>) -> Result<()> {
+        let insert_in_place = self.config.prefer_insert_in_place && completed_snippets.len() == 1;
+        let mut snippets_text = completed_snippets
+            .into_iter()
+            .map(|completed_snippet| {
+                let snippet_text = completed_snippet
+                    .snippet
+                    .split("\n")
+                    .filter(|line| !line.starts_with("```"))
+                    .collect::<Vec<&str>>()
+                    .join("\n");
+                match insert_in_place {
+                    false => Self::wrap_snippet(snippet_text, completed_snippet.preset),
+                    true => snippet_text,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("");
         let mut changes = HashMap::new();
-        let text_edit = match self.config.prefer_insert_in_place {
+        let text_edit = match insert_in_place {
             false => {
+                snippets_text.push('\n');
                 let next_line_pos = Position::new(self.code_location.range.end.line + 1, 0);
                 TextEdit::new(
                     Range::new(next_line_pos.clone(), next_line_pos),
-                    Self::wrap_snippet(completed_snippet, "Completed snippet".to_string()),
+                    snippets_text,
                 )
             }
-            true => TextEdit::new(self.code_location.range.clone(), completed_snippet),
+            true => TextEdit::new(self.code_location.range.clone(), snippets_text),
         };
         changes.insert(self.code_location.uri.clone(), vec![text_edit]);
         self.passthrough_service
@@ -550,29 +583,51 @@ impl CodeCompleteTask {
 
         let random_context_snippets = self.get_random_context_snippets().await?;
 
-        let main_snippet = self
+        let mut main_snippet = self
             .content_manager
             .lock()
             .await
             .get_snippet(&self.code_location.uri, &self.code_location.range)
             .ok_or(anyhow!("failed to get main snippet from fetcher"))?;
 
+        let presets = self.extract_preset_list(&mut main_snippet);
+
         debug!("typedef context: {:#?}", typedef_context_snippets);
         debug!("main snippet: {:#?}", main_snippet);
+        debug!("presets: {:#?}", presets);
 
         self.notify_user(&progress_token, false).await?;
 
-        let completed_snippet = self
-            .send_generation_request(
-                typedef_context_snippets,
-                random_context_snippets,
-                main_snippet,
-            )
-            .await?;
+        let prompt_params = PromptParameters {
+            lang: self
+                .content_manager
+                .lock()
+                .await
+                .get_lang_id(&self.code_location.uri),
+            typedef_context_snippets,
+            random_context_snippets,
+            main_snippet,
+        };
+        let tasks: Vec<_> = presets
+            .into_iter()
+            .map(|preset| {
+                let core_service = self.llmvm_core_service.clone();
+                let prompt_params = prompt_params.clone();
+                tokio::spawn(async move {
+                    Self::send_generation_request(core_service, preset.clone(), prompt_params).await
+                })
+            })
+            .collect();
+        let completed_snippets = join_all(tasks)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, JoinError>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
-        debug!("completed snippet: {:#?}", completed_snippet);
+        debug!("completed snippets: {:#?}", completed_snippets);
 
-        self.apply_edit(completed_snippet).await?;
+        self.apply_edit(completed_snippets).await?;
 
         self.notify_user(&progress_token, true).await?;
 

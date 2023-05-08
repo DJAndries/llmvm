@@ -26,6 +26,7 @@ mod service;
 const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
 const CONFIG_FILENAME: &str = "codeassist.toml";
 const LOG_FILENAME: &str = "codeassist.log";
+const DEFAULT_PRESET: &str = "gpt-3.5-codegen";
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -34,12 +35,18 @@ pub struct CodeAssistConfig {
     bin_path: Option<String>,
 
     prefer_insert_in_place: bool,
+    default_preset: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config: Arc<CodeAssistConfig> = match load_config(CONFIG_FILENAME) {
-        Ok(config) => Arc::new(config),
+    let config: Arc<CodeAssistConfig> = match load_config::<CodeAssistConfig>(CONFIG_FILENAME) {
+        Ok(mut config) => {
+            if config.default_preset.is_empty() {
+                config.default_preset = DEFAULT_PRESET.to_string();
+            }
+            Arc::new(config)
+        }
         Err(e) => {
             eprintln!("failed to load config: {}", e);
             exit(1);
