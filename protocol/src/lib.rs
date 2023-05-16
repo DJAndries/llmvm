@@ -1,13 +1,15 @@
-#[cfg(feature = "stdio")]
-pub mod jsonrpc;
-
-#[cfg(feature = "stdio")]
-pub mod stdio;
-
 #[cfg(feature = "tower")]
 pub mod services;
 #[cfg(feature = "tower")]
 pub use tower;
+
+#[cfg(feature = "jsonrpc")]
+pub mod jsonrpc;
+#[cfg(feature = "stdio")]
+pub mod stdio;
+
+#[cfg(any(feature = "http-client", feature = "http-server"))]
+pub mod http;
 
 pub use async_trait::async_trait;
 
@@ -19,10 +21,13 @@ use std::{
     str::FromStr,
 };
 
+pub(crate) const COMMAND_TIMEOUT_SECS: u64 = 900;
 pub const CHAT_MODEL_PROVIDER_SUFFIX: &str = "-chat";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProtocolErrorType {
+    NotFound,
+    HttpMethodNotAllowed,
     BadRequest,
     Unauthorized,
     Internal,
@@ -151,5 +156,16 @@ impl FromStr for ModelDescription {
 impl Display for ModelDescription {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}/{}", self.backend, self.provider, self.model_name)
+    }
+}
+
+#[derive(Deserialize)]
+pub struct HttpServerConfig {
+    pub port: u16,
+}
+
+impl Default for HttpServerConfig {
+    fn default() -> Self {
+        Self { port: 8080 }
     }
 }

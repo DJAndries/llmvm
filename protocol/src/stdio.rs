@@ -1,10 +1,10 @@
 use serde_json::Value;
 use std::{
-    collections::{HashMap},
+    collections::HashMap,
     error::Error,
     future::Future,
     marker::PhantomData,
-    path::{Path},
+    path::Path,
     pin::Pin,
     process::Stdio,
     sync::Arc,
@@ -32,14 +32,15 @@ use crate::{
     jsonrpc::{
         JsonRpcErrorCode, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
     },
-    services::{ServiceError, ServiceFuture}, BackendGenerationRequest, BackendGenerationResponse, GenerationRequest,
-    GenerationResponse, ProtocolError, ProtocolErrorType,
+    services::{ServiceError, ServiceFuture},
+    BackendGenerationRequest, BackendGenerationResponse, GenerationRequest, GenerationResponse,
+    ProtocolError, ProtocolErrorType, COMMAND_TIMEOUT_SECS,
 };
 
-const STDIO_COMMAND_TIMEOUT_SECS: u64 = 900;
 const GENERATION_METHOD: &str = "generation";
 const INIT_PROJECT_METHOD: &str = "init_project";
 
+// TODO: move these to lib
 #[derive(Clone, Serialize, Deserialize)]
 pub enum BackendRequest {
     Generation(BackendGenerationRequest),
@@ -97,7 +98,7 @@ fn parse_from_value<R: DeserializeOwned>(value: Value) -> Result<R, StdioError> 
     })
 }
 
-pub trait ResponseConvert<Request, Response> {
+pub trait ResponseJsonRpcConvert<Request, Response> {
     fn from_jsonrpc_response(
         value: JsonRpcResponse,
         original_request: &Request,
@@ -136,7 +137,7 @@ impl Into<JsonRpcRequest> for CoreRequest {
     }
 }
 
-impl ResponseConvert<CoreRequest, CoreResponse> for CoreResponse {
+impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
     fn from_jsonrpc_response(
         value: JsonRpcResponse,
         original_request: &CoreRequest,
@@ -189,7 +190,7 @@ impl Into<JsonRpcRequest> for BackendRequest {
     }
 }
 
-impl ResponseConvert<BackendRequest, BackendResponse> for BackendResponse {
+impl ResponseJsonRpcConvert<BackendRequest, BackendResponse> for BackendResponse {
     fn from_jsonrpc_response(
         value: JsonRpcResponse,
         original_request: &BackendRequest,
@@ -238,7 +239,7 @@ impl From<ProtocolError> for StdioError {
 pub struct StdioServer<Request, Response, S>
 where
     Request: TryFrom<JsonRpcRequest, Error = StdioError> + Send,
-    Response: ResponseConvert<Request, Response> + Send,
+    Response: ResponseJsonRpcConvert<Request, Response> + Send,
     S: Service<
             Request,
             Response = Response,
@@ -260,7 +261,7 @@ where
 impl<Request, Response, S> StdioServer<Request, Response, S>
 where
     Request: TryFrom<JsonRpcRequest, Error = StdioError> + Send,
-    Response: ResponseConvert<Request, Response> + Send,
+    Response: ResponseJsonRpcConvert<Request, Response> + Send,
     S: Service<
             Request,
             Response = Response,
@@ -273,7 +274,7 @@ where
     pub fn new(service: S) -> Self {
         let (message_tx, message_rx) = mpsc::unbounded_channel();
         Self {
-            service: Timeout::new(service, Duration::from_secs(STDIO_COMMAND_TIMEOUT_SECS)),
+            service: Timeout::new(service, Duration::from_secs(COMMAND_TIMEOUT_SECS)),
             stdin: BufReader::new(stdin()),
             stdout: Arc::new(Mutex::new(stdout())),
             message_tx: Some(message_tx),
@@ -367,7 +368,7 @@ where
 struct ClientRequestTrx<Request, Response>
 where
     Request: Into<JsonRpcRequest> + Send,
-    Response: ResponseConvert<Request, Response> + Send,
+    Response: ResponseJsonRpcConvert<Request, Response> + Send,
 {
     request: Request,
     response_tx: oneshot::Sender<Result<Response, StdioError>>,
@@ -381,7 +382,7 @@ struct NotificationReceiveLink {
 pub struct StdioClient<Request, Response>
 where
     Request: Into<JsonRpcRequest> + Clone + Send + 'static,
-    Response: ResponseConvert<Request, Response> + Send + 'static,
+    Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
 {
     _child: Arc<Child>,
     to_child_tx: UnboundedSender<ClientRequestTrx<Request, Response>>,
@@ -391,7 +392,7 @@ where
 impl<Request, Response> Clone for StdioClient<Request, Response>
 where
     Request: Into<JsonRpcRequest> + Clone + Send + 'static,
-    Response: ResponseConvert<Request, Response> + Send + 'static,
+    Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -405,7 +406,7 @@ where
 impl<Request, Response> Service<Request> for StdioClient<Request, Response>
 where
     Request: Into<JsonRpcRequest> + Clone + Send + 'static,
-    Response: ResponseConvert<Request, Response> + Send + 'static,
+    Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
 {
     type Response = Result<Response, StdioError>;
     type Error = Box<dyn Error + Send + Sync + 'static>;
@@ -440,7 +441,7 @@ where
 impl<Request, Response> StdioClient<Request, Response>
 where
     Request: Into<JsonRpcRequest> + Clone + Send + 'static,
-    Response: ResponseConvert<Request, Response> + Send + 'static,
+    Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
 {
     async fn output_message(stdin: &mut ChildStdin, message: JsonRpcMessage) {
         let serialized_response = serialize_payload(&message);
@@ -565,7 +566,7 @@ where
                 to_child_tx,
                 notification_recv_link_tx,
             },
-            Duration::from_secs(STDIO_COMMAND_TIMEOUT_SECS),
+            Duration::from_secs(COMMAND_TIMEOUT_SECS),
         ))
     }
 }

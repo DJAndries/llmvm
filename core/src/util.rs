@@ -1,9 +1,4 @@
-use std::{
-    time::{SystemTime, UNIX_EPOCH},
-};
-
-
-
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn current_timestamp_secs() -> u64 {
     SystemTime::now()

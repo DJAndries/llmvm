@@ -1,9 +1,11 @@
-use std::process::exit;
+use std::io::ErrorKind;
 use std::sync::Arc;
+use std::{io, process::exit};
 
 use clap::{command, Parser};
 use llmvm_backend_util::{run_backend, BackendCommand};
 use llmvm_llama::{LlamaBackend, LlamaConfig};
+use llmvm_protocol::HttpServerConfig;
 use llmvm_util::{config::load_config, logging::setup_subscriber};
 use serde::Deserialize;
 
@@ -21,15 +23,16 @@ struct Cli {
 }
 
 #[derive(Deserialize)]
-pub struct CliConfigContent {
+struct CliConfigContent {
     tracing_directive: Option<String>,
+    http_server: Option<HttpServerConfig>,
 
     #[serde(flatten)]
     lib_config: LlamaConfig,
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> std::io::Result<()> {
+async fn main() -> io::Result<()> {
     let config: CliConfigContent = match load_config(CONFIG_FILENAME) {
         Ok(config) => config,
         Err(e) => {
@@ -53,5 +56,7 @@ async fn main() -> std::io::Result<()> {
 
     backend.load().await;
 
-    run_backend(cli.command, backend).await
+    run_backend(cli.command, backend, config.http_server)
+        .await
+        .map_err(|e| io::Error::new(ErrorKind::Other, e))
 }

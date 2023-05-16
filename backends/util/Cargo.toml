@@ -7,3 +7,4 @@ edition = "2021"
 clap = { version = "4.1", features = ["derive"] }
 llmvm-protocol = { path = "../../protocol" }
 serde_json = "1.0"
+tracing = "0.1"

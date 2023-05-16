@@ -69,6 +69,7 @@ impl From<ProtocolErrorType> for JsonRpcErrorCode {
             ProtocolErrorType::BadRequest => JsonRpcErrorCode::InvalidRequest,
             ProtocolErrorType::Unauthorized => JsonRpcErrorCode::InvalidRequest,
             ProtocolErrorType::Internal => JsonRpcErrorCode::InternalError,
+            _ => JsonRpcErrorCode::InternalError,
         }
     }
 }
