@@ -2,18 +2,23 @@ use std::{
     convert::Infallible,
     marker::PhantomData,
     net::SocketAddr,
+    str::FromStr,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 
 use hyper::{
     body::{to_bytes, Body},
+    client::HttpConnector,
     header::CONTENT_TYPE,
-    http::Request as HttpRequest,
-    Method, Response as HttpResponse, StatusCode, Uri,
+    http::{uri::InvalidUri, Request as HttpRequest},
+    Client, Method, Response as HttpResponse, StatusCode, Uri,
 };
 #[cfg(feature = "http-server")]
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
+#[cfg(feature = "http-client")]
+use hyper_rustls::HttpsConnector;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
 use tower::{timeout::Timeout, Service};
@@ -22,7 +27,7 @@ use tracing::{debug, info};
 use crate::{
     services::{ServiceError, ServiceFuture},
     stdio::{BackendRequest, BackendResponse, CoreRequest, CoreResponse},
-    HttpServerConfig, ProtocolError, ProtocolErrorType, COMMAND_TIMEOUT_SECS,
+    HttpClientConfig, HttpServerConfig, ProtocolError, ProtocolErrorType, COMMAND_TIMEOUT_SECS,
 };
 
 const GENERATE_PATH: &str = "/generate";
@@ -68,7 +73,7 @@ fn serialize_to_http_request<T: Serialize>(
                 .expect("base url should contain authority")
                 .clone(),
         )
-        .path_and_query(path)
+        .path_and_query(format!("{}{}", base_url.path(), path))
         .build()
         .expect("should be able to build url");
     Ok(HttpRequest::builder()
@@ -102,7 +107,7 @@ pub trait RequestHttpConvert<R> {
 #[async_trait::async_trait]
 pub trait ResponseHttpConvert<R> {
     async fn from_http_response(
-        request_url: &Uri,
+        request_path: &str,
         response: HttpResponse<Body>,
     ) -> Result<Option<R>, ProtocolError>;
 
@@ -136,10 +141,10 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
 #[async_trait::async_trait]
 impl ResponseHttpConvert<CoreResponse> for CoreResponse {
     async fn from_http_response(
-        request_url: &Uri,
+        request_path: &str,
         response: HttpResponse<Body>,
     ) -> Result<Option<Self>, ProtocolError> {
-        let response = match request_url.path() {
+        let response = match request_path {
             GENERATE_PATH => CoreResponse::Generation(parse_response(response).await?),
             _ => return Ok(None),
         };
@@ -183,10 +188,10 @@ impl RequestHttpConvert<BackendRequest> for BackendRequest {
 #[async_trait::async_trait]
 impl ResponseHttpConvert<BackendResponse> for BackendResponse {
     async fn from_http_response(
-        request_url: &Uri,
+        request_path: &str,
         response: HttpResponse<Body>,
     ) -> Result<Option<Self>, ProtocolError> {
-        let response = match request_url.path() {
+        let response = match request_path {
             GENERATE_PATH => BackendResponse::Generation(parse_response(response).await?),
             _ => return Ok(None),
         };
@@ -308,14 +313,7 @@ where
                             })
                             .unwrap_or_else(|e| {
                                 // Map service error into an http response
-                                (*match e.downcast_ref::<ProtocolError>() {
-                                    Some(_) => e.downcast().unwrap(),
-                                    None => Box::new(ProtocolError {
-                                        error_type: ProtocolErrorType::Internal,
-                                        error: e,
-                                    }),
-                                })
-                                .into()
+                                ProtocolError::from(e).into()
                             })
                     }
                     // If option is None, we can assume that the request resulted
@@ -412,5 +410,68 @@ where
         info!("listening to http requests on port {}", self.config.port);
 
         server.serve(make_service).await
+    }
+}
+
+#[cfg(feature = "http-client")]
+#[derive(Clone)]
+pub struct HttpClient<Request, Response>
+where
+    Request: RequestHttpConvert<Request> + Send + 'static,
+    Response: ResponseHttpConvert<Response> + Send + 'static,
+{
+    base_url: Arc<Uri>,
+    client: Client<HttpsConnector<HttpConnector>>,
+    request_phantom: PhantomData<Request>,
+    response_phantom: PhantomData<Response>,
+}
+
+#[cfg(feature = "http-client")]
+impl<Request, Response> HttpClient<Request, Response>
+where
+    Request: RequestHttpConvert<Request> + Send + 'static,
+    Response: ResponseHttpConvert<Response> + Send + 'static,
+{
+    pub fn new(config: HttpClientConfig) -> Result<Self, InvalidUri> {
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .https_or_http()
+            .enable_http1()
+            .build();
+        let client = Client::builder().build(https);
+        let base_url = Arc::new(Uri::from_str(&config.base_url)?);
+        Ok(Self {
+            base_url,
+            client,
+            request_phantom: Default::default(),
+            response_phantom: Default::default(),
+        })
+    }
+}
+
+#[cfg(feature = "http-client")]
+impl<Request, Response> Service<Request> for HttpClient<Request, Response>
+where
+    Request: RequestHttpConvert<Request> + Send + 'static,
+    Response: ResponseHttpConvert<Response> + Send + 'static,
+{
+    type Response = Response;
+    type Error = ServiceError;
+    type Future = ServiceFuture<Response>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: Request) -> Self::Future {
+        let request = request.to_http_request(&self.base_url);
+        let mut client = self.client.clone();
+        Box::pin(async move {
+            let request = request?.ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?;
+            let request_path = request.uri().path().to_string();
+            let response = client.call(request).await?;
+            let response = Response::from_http_response(&request_path, response).await?;
+            Ok(response.ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?)
+        })
     }
 }

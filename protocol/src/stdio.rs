@@ -1,11 +1,8 @@
 use serde_json::Value;
 use std::{
     collections::HashMap,
-    error::Error,
-    future::Future,
     marker::PhantomData,
     path::Path,
-    pin::Pin,
     process::Stdio,
     sync::Arc,
     task::{Context, Poll},
@@ -13,7 +10,7 @@ use std::{
 };
 use thiserror::Error;
 use tokio::{
-    io::{stdin, stdout, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Stdin, Stdout},
+    io::{stdin, stdout, AsyncBufReadExt, AsyncWriteExt, BufReader, Stdin, Stdout},
     sync::{
         mpsc::{self, UnboundedReceiver},
         oneshot, Mutex,
@@ -246,7 +243,6 @@ where
             Error = ServiceError,
             Future = ServiceFuture<Response>,
         > + Send
-        + Clone
         + 'static,
 {
     service: Timeout<S>,
@@ -261,14 +257,13 @@ where
 impl<Request, Response, S> StdioServer<Request, Response, S>
 where
     Request: TryFrom<JsonRpcRequest, Error = StdioError> + Send,
-    Response: ResponseJsonRpcConvert<Request, Response> + Send,
+    Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
     S: Service<
             Request,
             Response = Response,
             Error = ServiceError,
             Future = ServiceFuture<Response>,
         > + Send
-        + Clone
         + 'static,
 {
     pub fn new(service: S) -> Self {
@@ -294,44 +289,34 @@ where
             .ok();
     }
 
-    fn handle_request(&self, serialized_request: String) {
-        let mut service = self.service.clone();
+    fn handle_request(&mut self, serialized_request: String) {
         let stdout = self.stdout.clone();
 
-        tokio::spawn(async move {
-            let value: Value = serde_json::from_str(&serialized_request).unwrap_or_default();
-            let (result, id) = match JsonRpcMessage::try_from(value) {
-                Err(e) => {
-                    error!("could not parse json rpc message from client: {e}, request: {serialized_request}");
+        let value: Value = serde_json::from_str(&serialized_request).unwrap_or_default();
+        let (result_future, id) = match JsonRpcMessage::try_from(value) {
+            Err(e) => {
+                error!("could not parse json rpc message from client: {e}, request: {serialized_request}");
+                return;
+            }
+            Ok(message) => match message {
+                JsonRpcMessage::Request(jsonrpc_request) => {
+                    let id = jsonrpc_request.id.clone();
+                    match Request::try_from(jsonrpc_request) {
+                        Err(e) => {
+                            error!("could not derive request enum from json rpc request: {e}");
+                            return;
+                        }
+                        Ok(request) => (self.service.call(request), id),
+                    }
+                }
+                _ => {
+                    error!("ignoring non-request json rpc message from client");
                     return;
                 }
-                Ok(message) => match message {
-                    JsonRpcMessage::Request(jsonrpc_request) => {
-                        let id = jsonrpc_request.id.clone();
-                        match Request::try_from(jsonrpc_request) {
-                            Err(e) => {
-                                error!("could not derive request enum from json rpc request: {e}");
-                                return;
-                            }
-                            Ok(request) => (
-                                service.call(request).await.map_err(|e| {
-                                    match e.downcast::<ProtocolError>() {
-                                        Ok(e) => *e,
-                                        Err(e) => {
-                                            ProtocolError::new(ProtocolErrorType::Internal, e)
-                                        }
-                                    }
-                                }),
-                                id,
-                            ),
-                        }
-                    }
-                    _ => {
-                        error!("ignoring non-request json rpc message from client");
-                        return;
-                    }
-                },
-            };
+            },
+        };
+        tokio::spawn(async move {
+            let result = result_future.await.map_err(ProtocolError::from);
             Self::output_message(
                 stdout.as_ref(),
                 Response::into_jsonrpc_response(result, id).into(),
@@ -408,9 +393,9 @@ where
     Request: Into<JsonRpcRequest> + Clone + Send + 'static,
     Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
 {
-    type Response = Result<Response, StdioError>;
-    type Error = Box<dyn Error + Send + Sync + 'static>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Response = Response;
+    type Error = ServiceError;
+    type Future = ServiceFuture<Response>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -433,7 +418,7 @@ where
                 error_type: ProtocolErrorType::Internal,
                 description: "should be able to recv response for stdio request from comm task"
                     .to_string(),
-            })?)
+            })??)
         })
     }
 }
@@ -538,7 +523,7 @@ where
         bin_path: Option<&str>,
         program: &str,
         args: &[String],
-    ) -> std::io::Result<Timeout<Self>> {
+    ) -> std::io::Result<Self> {
         let program_with_bin_path = bin_path.map(|bin_path| {
             Path::new(bin_path)
                 .join(program)
@@ -560,13 +545,10 @@ where
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let (to_child_tx, notification_recv_link_tx) = Self::start_comm_task(stdin, stdout);
-        Ok(Timeout::new(
-            Self {
-                _child: Arc::new(child),
-                to_child_tx,
-                notification_recv_link_tx,
-            },
-            Duration::from_secs(COMMAND_TIMEOUT_SECS),
-        ))
+        Ok(Self {
+            _child: Arc::new(child),
+            to_child_tx,
+            notification_recv_link_tx,
+        })
     }
 }

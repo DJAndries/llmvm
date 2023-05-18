@@ -2,29 +2,32 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     hash::{Hash, Hasher},
+    pin::Pin,
     sync::Arc,
 };
 
 use anyhow::{anyhow, bail, Result};
-use futures::future::join_all;
+use futures::{future::join_all, Future};
 use llmvm_protocol::{
+    services::{BoxedService, ServiceError, ServiceFuture},
     stdio::{CoreRequest, CoreResponse, StdioClient},
+    tower::timeout::future::ResponseFuture,
     GenerationParameters, GenerationRequest,
 };
 use lsp_types::{
-    notification::{Progress},
+    notification::Progress,
     request::{
-        ApplyWorkspaceEdit, FoldingRangeRequest, GotoTypeDefinition,
-        GotoTypeDefinitionParams, GotoTypeDefinitionResponse,
-        SemanticTokensFullRequest, WorkDoneProgressCreate,
+        ApplyWorkspaceEdit, FoldingRangeRequest, GotoTypeDefinition, GotoTypeDefinitionParams,
+        GotoTypeDefinitionResponse, SemanticTokensFullRequest, WorkDoneProgressCreate,
     },
-    ApplyWorkspaceEditParams, FoldingRange, FoldingRangeParams, Location, Position, ProgressParams, ProgressParamsValue, ProgressToken,
-    Range, SemanticTokens, SemanticTokensParams, ServerCapabilities, TextDocumentIdentifier,
-    TextDocumentPositionParams, TextEdit, Url, WorkDoneProgress, WorkDoneProgressBegin,
-    WorkDoneProgressCreateParams, WorkDoneProgressEnd,
+    ApplyWorkspaceEditParams, FoldingRange, FoldingRangeParams, Location, Position, ProgressParams,
+    ProgressParamsValue, ProgressToken, Range, SemanticTokens, SemanticTokensParams,
+    ServerCapabilities, TextDocumentIdentifier, TextDocumentPositionParams, TextEdit, Url,
+    WorkDoneProgress, WorkDoneProgressBegin, WorkDoneProgressCreateParams, WorkDoneProgressEnd,
     WorkDoneProgressReport, WorkspaceEdit,
 };
 use serde::Serialize;
+use serde_json::Value;
 use tokio::{sync::Mutex, task::JoinError};
 use tower::{timeout::Timeout, Service, ServiceExt};
 use tracing::{debug, error};
@@ -95,7 +98,7 @@ impl From<FoldingRange> for SimpleFoldingRange {
 pub struct CodeCompleteTask {
     config: Arc<CodeAssistConfig>,
 
-    llmvm_core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
+    llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse>>>>,
     passthrough_service: LspMessageService,
     root_uri: Option<Url>,
     supports_semantic_tokens: bool,
@@ -114,7 +117,7 @@ pub struct CodeCompleteTask {
 impl CodeCompleteTask {
     pub fn new(
         config: Arc<CodeAssistConfig>,
-        llmvm_core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
+        llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse>>>>,
         passthrough_service: LspMessageService,
         server_capabilities: Option<&ServerCapabilities>,
         root_uri: Option<Url>,
@@ -407,22 +410,28 @@ impl CodeCompleteTask {
     }
 
     async fn send_generation_request(
-        mut core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
+        &mut self,
         preset: String,
-        prompt_params: PromptParameters,
-    ) -> Result<CompletedSnippet> {
-        let response = core_service
+        prompt_params: Value,
+    ) -> ResponseFuture<ServiceFuture<CoreResponse>> {
+        self.llmvm_core_service
+            .lock()
+            .await
             .call(CoreRequest::Generation(GenerationRequest {
                 parameters: Some(GenerationParameters {
-                    prompt_parameters: Some(serde_json::to_value(prompt_params)?),
+                    prompt_parameters: Some(prompt_params),
                     ..Default::default()
                 }),
                 existing_thread_id: None,
                 save_thread: false,
                 preset_id: Some(preset.clone()),
             }))
-            .await
-            .map_err(|e| anyhow!(e))??;
+    }
+    async fn handle_generation_response(
+        response_future: ResponseFuture<ServiceFuture<CoreResponse>>,
+        preset: String,
+    ) -> Result<CompletedSnippet> {
+        let response = response_future.await.map_err(|e| anyhow!(e))?;
         match response {
             CoreResponse::Generation(response) => Ok(CompletedSnippet {
                 preset,
@@ -585,7 +594,6 @@ impl CodeCompleteTask {
             };
 
             let typedef_locations = self.get_type_definition_locations(symbols).await?;
-
             let folding_ranges = if self.supports_folding_ranges {
                 self.get_folding_ranges(&typedef_locations).await?
             } else {
@@ -613,7 +621,7 @@ impl CodeCompleteTask {
         debug!("main snippet: {:#?}", main_snippet);
         debug!("presets: {:#?}", presets);
 
-        let prompt_params = PromptParameters {
+        let prompt_params = serde_json::to_value(PromptParameters {
             lang: self
                 .content_manager
                 .lock()
@@ -622,17 +630,17 @@ impl CodeCompleteTask {
             typedef_context_snippets,
             random_context_snippets,
             main_snippet,
-        };
-        let tasks: Vec<_> = presets
-            .into_iter()
-            .map(|preset| {
-                let core_service = self.llmvm_core_service.clone();
-                let prompt_params = prompt_params.clone();
-                tokio::spawn(async move {
-                    Self::send_generation_request(core_service, preset.clone(), prompt_params).await
-                })
-            })
-            .collect();
+        })?;
+
+        let mut tasks = Vec::new();
+        for preset in presets {
+            let response_future = self
+                .send_generation_request(preset.clone(), prompt_params.clone())
+                .await;
+            tasks.push(tokio::spawn(async move {
+                Self::handle_generation_response(response_future, preset).await
+            }))
+        }
         let completed_snippets = join_all(tasks)
             .await
             .into_iter()

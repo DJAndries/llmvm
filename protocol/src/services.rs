@@ -70,6 +70,15 @@ where
 pub type ServiceError = Box<dyn Error + Send + Sync + 'static>;
 pub type ServiceFuture<Response> =
     Pin<Box<dyn Future<Output = Result<Response, ServiceError>> + Send>>;
+pub type BoxedService<Request, Response> = Box<
+    dyn Service<
+            Request,
+            Response = Response,
+            Error = ServiceError,
+            Future = ServiceFuture<Response>,
+        > + Send
+        + Sync,
+>;
 
 impl<B> Service<BackendRequest> for BackendService<B>
 where

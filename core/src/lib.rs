@@ -4,32 +4,34 @@ use handlebars::{
     no_escape, Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext,
     RenderError, Renderable, StringOutput,
 };
+use llmvm_protocol::services::BoxedService;
 use llmvm_protocol::stdio::{BackendRequest, BackendResponse, StdioClient, StdioError};
 use llmvm_protocol::tower::timeout::Timeout;
 use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
-    Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationParameters,
+    BackendGenerationRequest, BackendGenerationResponse, Core, GenerationParameters,
     GenerationRequest, GenerationResponse, Message, MessageRole, ModelDescription, ProtocolError,
-    ProtocolErrorType,
+    ProtocolErrorType, COMMAND_TIMEOUT_SECS,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use rust_embed::RustEmbed;
-use serde::{Deserialize};
-use serde_json::{Value};
+use serde::Deserialize;
+use serde_json::Value;
 
 use std::fs::create_dir;
+use std::time::Duration;
 use std::{
-    cell::{RefCell},
-    collections::{HashMap},
+    cell::RefCell,
+    collections::HashMap,
     path::{Path, PathBuf},
     str::{FromStr, Utf8Error},
     sync::Arc,
 };
 use thiserror::Error;
 use tokio::fs;
-use tokio::sync::{Mutex};
+use tokio::sync::Mutex;
 use tracing::{debug, info};
 use util::current_timestamp_secs;
 
@@ -309,9 +311,7 @@ pub struct LLMVMCoreConfig {
 }
 
 pub struct LLMVMCore {
-    stdio_clients:
-        Mutex<HashMap<String, Arc<Mutex<Timeout<StdioClient<BackendRequest, BackendResponse>>>>>>,
-    raw_clients: Mutex<HashMap<String, Arc<Mutex<Box<dyn Backend>>>>>,
+    clients: Mutex<HashMap<String, Timeout<BoxedService<BackendRequest, BackendResponse>>>>,
     config: LLMVMCoreConfig,
 }
 
@@ -319,8 +319,7 @@ impl LLMVMCore {
     pub async fn new(config: LLMVMCoreConfig) -> Result<Self> {
         clean_old_threads(config.ttl_secs.unwrap_or(DEFAULT_TTL_SECS)).await?;
         Ok(Self {
-            stdio_clients: Mutex::new(HashMap::new()),
-            raw_clients: Mutex::new(HashMap::new()),
+            clients: Mutex::new(HashMap::new()),
             config,
         })
     }
@@ -334,38 +333,39 @@ impl LLMVMCore {
             "{}{}{}",
             BACKEND_COMMAND_PREFIX, model_description.backend, BACKEND_COMMAND_SUFFIX
         );
-        let mut stdio_clients_guard = self.stdio_clients.lock().await;
-        let client = match stdio_clients_guard.get(&request.model) {
+        let mut clients_guard = self.clients.lock().await;
+        let client = match clients_guard.get_mut(&request.model) {
             None => {
                 let bin_path = self.config.bin_path.as_ref().map(|v| v.as_str());
                 debug!("starting backend {command} in {bin_path:?}");
-                stdio_clients_guard.insert(
+                clients_guard.insert(
                     request.model.to_string(),
-                    Arc::new(Mutex::new(
-                        StdioClient::new(bin_path, &command, &[])
-                            .await
-                            .map_err(|e| CoreError::BackendStart(e))?,
-                    )),
+                    Timeout::new(
+                        Box::new(
+                            StdioClient::new(bin_path, &command, &[])
+                                .await
+                                .map_err(|e| CoreError::BackendStart(e))?,
+                        ),
+                        Duration::from_secs(COMMAND_TIMEOUT_SECS),
+                    ),
                 );
-                stdio_clients_guard.get(&request.model).unwrap()
+                clients_guard.get_mut(&request.model).unwrap()
             }
             Some(client) => client,
-        }
-        .clone();
-        drop(stdio_clients_guard);
+        };
 
-        let mut client_lock = client.lock().await;
-        let resp_result = client_lock
-            .call(BackendRequest::Generation(request))
+        let resp_future = client.call(BackendRequest::Generation(request));
+        drop(clients_guard);
+        let resp = resp_future
             .await
-            .map_err(|e| CoreError::Protocol(ProtocolError::new(ProtocolErrorType::Internal, e)))?;
-        Ok(match resp_result? {
+            .map_err(|e| CoreError::Protocol(e.into()))?;
+        Ok(match resp {
             BackendResponse::Generation(response) => response,
         })
     }
 
     pub async fn close_client(&self, model: &str) {
-        self.stdio_clients.lock().await.remove(model);
+        self.clients.lock().await.remove(model);
     }
 }
 

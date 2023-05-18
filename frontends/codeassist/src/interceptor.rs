@@ -3,6 +3,7 @@ use std::{collections::HashSet, sync::Arc};
 use anyhow::{anyhow, Result};
 use llmvm_protocol::{
     jsonrpc::{JsonRpcMessage, JsonRpcRequest},
+    services::BoxedService,
     stdio::{CoreRequest, CoreResponse, StdioClient},
 };
 use lsp_types::{
@@ -11,10 +12,8 @@ use lsp_types::{
     InitializeParams, InitializeResult, Location, ServerCapabilities, Url,
 };
 
-use tokio::{
-    sync::{mpsc, Mutex},
-};
-use tower::{timeout::Timeout};
+use tokio::sync::{mpsc, Mutex};
+use tower::timeout::Timeout;
 use tracing::{debug, error};
 
 use crate::{
@@ -34,7 +33,7 @@ pub struct LspInterceptor {
     passthrough_service: LspMessageService,
     server_capabilities: Option<Arc<ServerCapabilities>>,
 
-    llmvm_core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
+    llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse>>>>,
 
     root_uri: Option<Url>,
     complete_task_last_id: usize,
@@ -48,7 +47,7 @@ impl LspInterceptor {
     pub fn new(
         config: Arc<CodeAssistConfig>,
         passthrough_service: LspMessageService,
-        llmvm_core_service: Timeout<StdioClient<CoreRequest, CoreResponse>>,
+        llmvm_core_service: Timeout<BoxedService<CoreRequest, CoreResponse>>,
     ) -> Self {
         let (service_tx, service_rx) = mpsc::unbounded_channel();
         Self {
@@ -57,7 +56,7 @@ impl LspInterceptor {
             service_tx: Some(service_tx),
             passthrough_service,
             server_capabilities: None,
-            llmvm_core_service,
+            llmvm_core_service: Arc::new(Mutex::new(llmvm_core_service)),
             root_uri: None,
             complete_task_last_id: 0,
             content_manager: Default::default(),

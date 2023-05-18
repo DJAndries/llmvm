@@ -21,7 +21,7 @@ use std::{
     str::FromStr,
 };
 
-pub(crate) const COMMAND_TIMEOUT_SECS: u64 = 900;
+pub const COMMAND_TIMEOUT_SECS: u64 = 900;
 pub const CHAT_MODEL_PROVIDER_SUFFIX: &str = "-chat";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -47,6 +47,15 @@ impl ProtocolError {
         error: Box<dyn Error + Send + Sync + 'static>,
     ) -> Self {
         Self { error_type, error }
+    }
+}
+
+impl From<Box<dyn Error + Send + Sync + 'static>> for ProtocolError {
+    fn from(error: Box<dyn Error + Send + Sync + 'static>) -> Self {
+        match error.downcast::<Self>() {
+            Ok(e) => *e,
+            Err(e) => ProtocolError::new(ProtocolErrorType::Internal, e),
+        }
     }
 }
 
@@ -159,6 +168,8 @@ impl Display for ModelDescription {
     }
 }
 
+// TODO: move back into http::config module which will be avail without features
+// TODO: put server and client in separate modules, get rid of cfg for each block
 #[derive(Deserialize)]
 pub struct HttpServerConfig {
     pub port: u16,
@@ -168,4 +179,9 @@ impl Default for HttpServerConfig {
     fn default() -> Self {
         Self { port: 8080 }
     }
+}
+
+#[derive(Deserialize)]
+pub struct HttpClientConfig {
+    pub base_url: String,
 }

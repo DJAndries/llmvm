@@ -2,11 +2,12 @@ use std::{
     env,
     process::{exit, Stdio},
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context, Result};
 use interceptor::LspInterceptor;
-use llmvm_protocol::stdio::StdioClient;
+use llmvm_protocol::{services::BoxedService, stdio::StdioClient, COMMAND_TIMEOUT_SECS};
 use llmvm_util::config::load_config;
 use llmvm_util::logging::setup_subscriber;
 use passthrough::LspStdioPassthrough;
@@ -15,6 +16,7 @@ use tokio::{
     io::{stdin, stdout},
     process::Command,
 };
+use tower::timeout::Timeout;
 
 mod complete;
 mod content;
@@ -81,13 +83,18 @@ async fn main() -> Result<()> {
         child.stdout.take().unwrap(),
     );
 
-    let llmvm_core_service = StdioClient::new(
-        config.bin_path.as_ref().map(|d| d.as_ref()),
-        LLMVM_CORE_CLI_COMMAND,
-        &["--log-to-file".to_string(), "stdio-server".to_string()],
-    )
-    .await
-    .context("failed to start llmvm-core-cli")?;
+    let llmvm_core_service: Timeout<BoxedService<_, _>> = Timeout::new(
+        Box::new(
+            StdioClient::new(
+                config.bin_path.as_ref().map(|d| d.as_ref()),
+                LLMVM_CORE_CLI_COMMAND,
+                &["--log-to-file".to_string(), "stdio-server".to_string()],
+            )
+            .await
+            .context("failed to start llmvm-core-cli")?,
+        ),
+        Duration::from_secs(COMMAND_TIMEOUT_SECS),
+    );
 
     let mut interceptor =
         LspInterceptor::new(config, passthrough.get_service(), llmvm_core_service);

@@ -1,16 +1,12 @@
-use anyhow::{Result};
+use anyhow::Result;
 use llmvm_protocol::jsonrpc::JsonRpcMessage;
 use lsp_types::{
     notification::{
-        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
-        Notification,
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
     },
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Range, Url,
 };
-use std::{
-    cmp::min,
-    collections::{BTreeMap, HashMap},
-};
+use std::{cmp::min, collections::HashMap};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, BufReader},
@@ -27,19 +23,6 @@ pub struct SnippetInfo {
     pub description: String,
     pub snippet: String,
 }
-
-struct PreSnippetInfo {
-    description: String,
-    lines: Vec<String>,
-}
-
-struct CharRangeInfo {
-    range: Range,
-    description: String,
-    id: usize,
-}
-
-type StartLineToCharRangeMap = BTreeMap<u32, Vec<CharRangeInfo>>;
 
 struct DocumentInfo {
     lines: Vec<String>,
