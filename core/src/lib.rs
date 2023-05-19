@@ -4,14 +4,15 @@ use handlebars::{
     no_escape, Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext,
     RenderError, Renderable, StringOutput,
 };
-use llmvm_protocol::services::BoxedService;
+use llmvm_protocol::http::HttpClient;
+use llmvm_protocol::services::{service_with_timeout, BoxedService, ServiceError};
 use llmvm_protocol::stdio::{BackendRequest, BackendResponse, StdioClient, StdioError};
 use llmvm_protocol::tower::timeout::Timeout;
 use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, Core, GenerationParameters,
-    GenerationRequest, GenerationResponse, Message, MessageRole, ModelDescription, ProtocolError,
-    ProtocolErrorType, COMMAND_TIMEOUT_SECS,
+    GenerationRequest, GenerationResponse, HttpClientConfig, Message, MessageRole,
+    ModelDescription, ProtocolError, ProtocolErrorType, COMMAND_TIMEOUT_SECS,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use rand::distributions::Alphanumeric;
@@ -46,8 +47,8 @@ pub type Result<T> = std::result::Result<T, CoreError>;
 pub enum CoreError {
     #[error("io error: {0}")]
     IO(#[from] std::io::Error),
-    #[error("failed to start backend: {0}")]
-    BackendStart(std::io::Error),
+    #[error("failed to start stdio backend: {0}")]
+    StdioBackendStart(std::io::Error),
     #[error("template not found")]
     TemplateNotFound,
     #[error("utf8 error: {0}")]
@@ -74,13 +75,15 @@ pub enum CoreError {
     MissingParameters,
     #[error("missing required generation parameter: {0}")]
     MissingParameter(&'static str),
+    #[error("failed to create http backend service")]
+    HttpServiceCreate,
 }
 
 impl Into<ProtocolError> for CoreError {
     fn into(self) -> ProtocolError {
         let error_type = match &self {
             CoreError::IO(_) => ProtocolErrorType::Internal,
-            CoreError::BackendStart(_) => ProtocolErrorType::Internal,
+            CoreError::StdioBackendStart(_) => ProtocolErrorType::Internal,
             CoreError::TemplateNotFound => ProtocolErrorType::BadRequest,
             CoreError::Utf8Error(_) => ProtocolErrorType::BadRequest,
             CoreError::UserHomeNotFound => ProtocolErrorType::Internal,
@@ -94,6 +97,7 @@ impl Into<ProtocolError> for CoreError {
             CoreError::TemplateRender(_) => ProtocolErrorType::BadRequest,
             CoreError::MissingParameters => ProtocolErrorType::BadRequest,
             CoreError::MissingParameter(_) => ProtocolErrorType::BadRequest,
+            CoreError::HttpServiceCreate => ProtocolErrorType::Internal,
         };
         ProtocolError {
             error_type,
@@ -308,6 +312,8 @@ pub struct LLMVMCoreConfig {
     pub tracing_directive: Option<String>,
     pub bin_path: Option<String>,
     pub ttl_secs: Option<u64>,
+
+    pub http_backends: HashMap<String, HttpClientConfig>,
 }
 
 pub struct LLMVMCore {
@@ -316,10 +322,23 @@ pub struct LLMVMCore {
 }
 
 impl LLMVMCore {
-    pub async fn new(config: LLMVMCoreConfig) -> Result<Self> {
+    pub async fn new(mut config: LLMVMCoreConfig) -> Result<Self> {
         clean_old_threads(config.ttl_secs.unwrap_or(DEFAULT_TTL_SECS)).await?;
+
+        let mut clients = HashMap::new();
+
+        for (name, config) in config.http_backends.drain() {
+            debug!("loading {} http backend", name);
+            clients.insert(
+                name,
+                service_with_timeout(Box::new(
+                    HttpClient::new(config).map_err(|_| CoreError::HttpServiceCreate)?,
+                )),
+            );
+        }
+
         Ok(Self {
-            clients: Mutex::new(HashMap::new()),
+            clients: Mutex::new(clients),
             config,
         })
     }
@@ -334,20 +353,17 @@ impl LLMVMCore {
             BACKEND_COMMAND_PREFIX, model_description.backend, BACKEND_COMMAND_SUFFIX
         );
         let mut clients_guard = self.clients.lock().await;
-        let client = match clients_guard.get_mut(&request.model) {
+        let client = match clients_guard.get_mut(&model_description.backend) {
             None => {
                 let bin_path = self.config.bin_path.as_ref().map(|v| v.as_str());
                 debug!("starting backend {command} in {bin_path:?}");
                 clients_guard.insert(
-                    request.model.to_string(),
-                    Timeout::new(
-                        Box::new(
-                            StdioClient::new(bin_path, &command, &[])
-                                .await
-                                .map_err(|e| CoreError::BackendStart(e))?,
-                        ),
-                        Duration::from_secs(COMMAND_TIMEOUT_SECS),
-                    ),
+                    model_description.backend.clone(),
+                    service_with_timeout(Box::new(
+                        StdioClient::new(bin_path, &command, &[])
+                            .await
+                            .map_err(|e| CoreError::StdioBackendStart(e))?,
+                    )),
                 );
                 clients_guard.get_mut(&request.model).unwrap()
             }

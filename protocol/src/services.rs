@@ -4,13 +4,14 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
-use tower::Service;
+use tower::{timeout::Timeout, Service};
 
 use crate::{
     stdio::{BackendRequest, BackendResponse, CoreRequest, CoreResponse},
-    Backend, Core,
+    Backend, Core, COMMAND_TIMEOUT_SECS,
 };
 
 pub struct BackendService<B>
@@ -127,6 +128,45 @@ where
                     .map(|v| CoreResponse::Generation(v)),
                 CoreRequest::InitProject => core.init_project().map(|_| CoreResponse::InitProject),
             }?)
+        })
+    }
+}
+
+pub fn service_with_timeout<Request, Response>(
+    service: BoxedService<Request, Response>,
+) -> Timeout<BoxedService<Request, Response>> {
+    Timeout::new(service, Duration::from_secs(COMMAND_TIMEOUT_SECS))
+}
+
+#[cfg(all(feature = "http-client", feature = "stdio"))]
+pub mod util {
+    use crate::{
+        http::{HttpClient, RequestHttpConvert, ResponseHttpConvert},
+        jsonrpc::JsonRpcRequest,
+        stdio::{ResponseJsonRpcConvert, StdioClient},
+        HttpClientConfig,
+    };
+
+    use super::{BoxedService, ServiceError};
+
+    // TODO: use this function in frontends to make building services
+    // more convenient
+    pub async fn build_service_from_config<Request, Response>(
+        command_name: &str,
+        bin_path: Option<&str>,
+        http_client_config: Option<HttpClientConfig>,
+    ) -> Result<BoxedService<Request, Response>, ServiceError>
+    where
+        Request: RequestHttpConvert<Request> + Into<JsonRpcRequest> + Send + Sync + Clone + 'static,
+        Response: ResponseHttpConvert<Response>
+            + ResponseJsonRpcConvert<Request, Response>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Ok(match http_client_config {
+            Some(config) => Box::new(HttpClient::new(config)?),
+            None => Box::new(StdioClient::new(bin_path, command_name, &[]).await?),
         })
     }
 }

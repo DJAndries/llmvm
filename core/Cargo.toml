@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 handlebars = "4.3"
 llmvm-util = { path = "../util" }
-llmvm-protocol = { path = "../protocol", features = ["stdio"] }
+llmvm-protocol = { path = "../protocol", features = ["stdio", "http-client"] }
 rand = "0.8"
 rust-embed = "6.6"
 serde = { version = "1.0", features = ["derive"] }

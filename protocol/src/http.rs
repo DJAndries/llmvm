@@ -73,7 +73,7 @@ fn serialize_to_http_request<T: Serialize>(
                 .expect("base url should contain authority")
                 .clone(),
         )
-        .path_and_query(format!("{}{}", base_url.path(), path))
+        .path_and_query(path)
         .build()
         .expect("should be able to build url");
     Ok(HttpRequest::builder()
