@@ -2,6 +2,7 @@ use std::{process::exit, sync::Arc};
 
 use clap::{arg, command, Args, Parser, Subcommand};
 use llmvm_core::{LLMVMCore, LLMVMCoreConfig};
+use llmvm_protocol::http::HttpServer;
 use llmvm_protocol::services::CoreService;
 use llmvm_protocol::{stdio::StdioServer, Core, GenerationParameters, GenerationRequest};
 use llmvm_util::config::load_config;
@@ -20,10 +21,17 @@ struct Cli {
     log_to_file: bool,
 }
 
+#[derive(Args, Clone)]
+struct HttpServerArgs {
+    #[arg(short, long)]
+    port: Option<u16>,
+}
+
 #[derive(Subcommand)]
-pub enum CoreCommand {
+enum CoreCommand {
     Generate(GenerateArgs),
     StdioServer,
+    HttpServer(HttpServerArgs),
     InitProject,
 }
 
@@ -50,7 +58,7 @@ pub struct GenerateArgs {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let config: LLMVMCoreConfig = match load_config(CONFIG_FILENAME) {
+    let mut config: LLMVMCoreConfig = match load_config(CONFIG_FILENAME) {
         Ok(config) => config,
         Err(e) => {
             eprintln!("failed to load config: {}", e);
@@ -68,6 +76,8 @@ async fn main() -> std::io::Result<()> {
             None
         },
     );
+
+    let mut http_config = config.http_server.take();
 
     let core = Arc::new(match LLMVMCore::new(config).await {
         Ok(core) => core,
@@ -107,6 +117,16 @@ async fn main() -> std::io::Result<()> {
         }
         CoreCommand::StdioServer => {
             StdioServer::new(CoreService::new(core)).run().await?;
+        }
+        CoreCommand::HttpServer(args) => {
+            let mut config = http_config.take().unwrap_or_default();
+            if let Some(port) = args.port {
+                config.port = port;
+            }
+            if let Err(e) = HttpServer::new(CoreService::new(core), config).run().await {
+                eprintln!("failed to start http server: {}", e);
+                exit(1);
+            }
         }
         CoreCommand::InitProject => match core.init_project() {
             Err(e) => {

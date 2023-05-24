@@ -153,6 +153,7 @@ pub mod util {
     // more convenient
     pub async fn build_service_from_config<Request, Response>(
         command_name: &str,
+        command_arguments: &[&str],
         bin_path: Option<&str>,
         http_client_config: Option<HttpClientConfig>,
     ) -> Result<BoxedService<Request, Response>, ServiceError>
@@ -166,7 +167,7 @@ pub mod util {
     {
         Ok(match http_client_config {
             Some(config) => Box::new(HttpClient::new(config)?),
-            None => Box::new(StdioClient::new(bin_path, command_name, &[]).await?),
+            None => Box::new(StdioClient::new(bin_path, command_name, command_arguments).await?),
         })
     }
 }

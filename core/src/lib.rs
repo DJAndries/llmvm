@@ -11,8 +11,8 @@ use llmvm_protocol::tower::timeout::Timeout;
 use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, Core, GenerationParameters,
-    GenerationRequest, GenerationResponse, HttpClientConfig, Message, MessageRole,
-    ModelDescription, ProtocolError, ProtocolErrorType, COMMAND_TIMEOUT_SECS,
+    GenerationRequest, GenerationResponse, HttpClientConfig, HttpServerConfig, Message,
+    MessageRole, ModelDescription, ProtocolError, ProtocolErrorType,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use rand::distributions::Alphanumeric;
@@ -311,7 +311,8 @@ pub async fn get_thread_messages(thread_id: &str) -> Result<Vec<Message>> {
 pub struct LLMVMCoreConfig {
     pub tracing_directive: Option<String>,
     pub bin_path: Option<String>,
-    pub ttl_secs: Option<u64>,
+    pub http_server: Option<HttpServerConfig>,
+    pub thread_ttl_secs: Option<u64>,
 
     pub http_backends: HashMap<String, HttpClientConfig>,
 }
@@ -323,7 +324,7 @@ pub struct LLMVMCore {
 
 impl LLMVMCore {
     pub async fn new(mut config: LLMVMCoreConfig) -> Result<Self> {
-        clean_old_threads(config.ttl_secs.unwrap_or(DEFAULT_TTL_SECS)).await?;
+        clean_old_threads(config.thread_ttl_secs.unwrap_or(DEFAULT_TTL_SECS)).await?;
 
         let mut clients = HashMap::new();
 
@@ -357,15 +358,16 @@ impl LLMVMCore {
             None => {
                 let bin_path = self.config.bin_path.as_ref().map(|v| v.as_str());
                 debug!("starting backend {command} in {bin_path:?}");
+                let backend = model_description.backend.as_str();
                 clients_guard.insert(
-                    model_description.backend.clone(),
+                    backend.to_string(),
                     service_with_timeout(Box::new(
-                        StdioClient::new(bin_path, &command, &[])
+                        StdioClient::new(bin_path, &command, &["--log-to-file"])
                             .await
                             .map_err(|e| CoreError::StdioBackendStart(e))?,
                     )),
                 );
-                clients_guard.get_mut(&request.model).unwrap()
+                clients_guard.get_mut(backend).unwrap()
             }
             Some(client) => client,
         };

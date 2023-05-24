@@ -2,12 +2,15 @@ use std::{
     env,
     process::{exit, Stdio},
     sync::Arc,
-    time::Duration,
 };
 
 use anyhow::{anyhow, Context, Result};
 use interceptor::LspInterceptor;
-use llmvm_protocol::{services::BoxedService, stdio::StdioClient, COMMAND_TIMEOUT_SECS};
+use llmvm_protocol::{
+    services::{service_with_timeout, util::build_service_from_config, BoxedService},
+    stdio::{CoreRequest, CoreResponse},
+    HttpClientConfig,
+};
 use llmvm_util::config::load_config;
 use llmvm_util::logging::setup_subscriber;
 use passthrough::LspStdioPassthrough;
@@ -26,34 +29,41 @@ mod passthrough;
 mod service;
 
 const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
+const LLMVM_CORE_CLI_ARGS: [&'static str; 2] = ["--log-to-file", "stdio-server"];
 const CONFIG_FILENAME: &str = "codeassist.toml";
 const LOG_FILENAME: &str = "codeassist.log";
 const DEFAULT_PRESET: &str = "gpt-3.5-codegen";
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 #[serde(default)]
 pub struct CodeAssistConfig {
     tracing_directive: Option<String>,
     bin_path: Option<String>,
 
+    http_core: Option<HttpClientConfig>,
+
     prefer_insert_in_place: bool,
     default_preset: String,
 }
 
+impl Default for CodeAssistConfig {
+    fn default() -> Self {
+        Self {
+            tracing_directive: None,
+            bin_path: None,
+            http_core: None,
+            prefer_insert_in_place: false,
+            default_preset: DEFAULT_PRESET.to_string(),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config: Arc<CodeAssistConfig> = match load_config::<CodeAssistConfig>(CONFIG_FILENAME) {
-        Ok(mut config) => {
-            if config.default_preset.is_empty() {
-                config.default_preset = DEFAULT_PRESET.to_string();
-            }
-            Arc::new(config)
-        }
-        Err(e) => {
-            eprintln!("failed to load config: {}", e);
-            exit(1);
-        }
-    };
+    let mut config = load_config::<CodeAssistConfig>(CONFIG_FILENAME).unwrap_or_else(|e| {
+        eprintln!("failed to load config: {}", e);
+        exit(1);
+    });
 
     setup_subscriber(
         config.tracing_directive.as_ref().map(|d| d.as_str()),
@@ -83,21 +93,22 @@ async fn main() -> Result<()> {
         child.stdout.take().unwrap(),
     );
 
-    let llmvm_core_service: Timeout<BoxedService<_, _>> = Timeout::new(
-        Box::new(
-            StdioClient::new(
-                config.bin_path.as_ref().map(|d| d.as_ref()),
-                LLMVM_CORE_CLI_COMMAND,
-                &["--log-to-file".to_string(), "stdio-server".to_string()],
-            )
-            .await
-            .context("failed to start llmvm-core-cli")?,
-        ),
-        Duration::from_secs(COMMAND_TIMEOUT_SECS),
+    let llmvm_core_service: Timeout<BoxedService<_, _>> = service_with_timeout(
+        build_service_from_config::<CoreRequest, CoreResponse>(
+            LLMVM_CORE_CLI_COMMAND,
+            &LLMVM_CORE_CLI_ARGS,
+            config.bin_path.as_ref().map(|b| b.as_ref()),
+            config.http_core.take(),
+        )
+        .await
+        .map_err(|e| anyhow!(e))?,
     );
 
-    let mut interceptor =
-        LspInterceptor::new(config, passthrough.get_service(), llmvm_core_service);
+    let mut interceptor = LspInterceptor::new(
+        Arc::new(config),
+        passthrough.get_service(),
+        llmvm_core_service,
+    );
 
     passthrough.set_interceptor_service(interceptor.get_service());
 

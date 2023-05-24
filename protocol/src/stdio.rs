@@ -522,7 +522,7 @@ where
     pub async fn new(
         bin_path: Option<&str>,
         program: &str,
-        args: &[String],
+        args: &[&str],
     ) -> std::io::Result<Self> {
         let program_with_bin_path = bin_path.map(|bin_path| {
             Path::new(bin_path)
