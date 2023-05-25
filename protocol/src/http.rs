@@ -10,11 +10,12 @@ use std::{
 
 use hyper::{
     body::{to_bytes, Body},
-    client::HttpConnector,
     header::CONTENT_TYPE,
     http::{uri::InvalidUri, Request as HttpRequest},
-    Client, Method, Response as HttpResponse, StatusCode, Uri,
+    Method, Response as HttpResponse, StatusCode, Uri,
 };
+#[cfg(feature = "http-client")]
+use hyper::{client::HttpConnector, Client};
 #[cfg(feature = "http-server")]
 use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 #[cfg(feature = "http-client")]

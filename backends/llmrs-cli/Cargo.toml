@@ -1,12 +1,12 @@
 [package]
-name = "llmvm-llama-cli"
+name = "llmvm-llmrs-cli"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 clap = { version = "4.1", features = ["derive"] }
 llmvm-backend-util = { path = "../util" }
-llmvm-llama = { path = "../llama" }
+llmvm-llmrs = { path = "../llmrs" }
 llmvm-protocol = { path = "../../protocol", features = ["http-server"] }
 llmvm-util = { path = "../../util", features = ["config", "logging"] }
 serde = { version = "1.0", features = ["derive"] }

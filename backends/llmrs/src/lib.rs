@@ -2,7 +2,7 @@ mod task;
 
 use std::{collections::HashMap, str::FromStr, thread::JoinHandle};
 
-use llama_rs::{InferenceSessionParameters, LoadError};
+use llm::{InferenceSessionConfig, LoadError, UnsupportedModelArchitecture};
 use llmvm_protocol::{
     async_trait, Backend, BackendGenerationRequest, BackendGenerationResponse, ModelDescription,
     ProtocolError, ProtocolErrorType,
@@ -10,41 +10,44 @@ use llmvm_protocol::{
 
 use serde::Deserialize;
 use std::thread;
-use task::{send_request_to_task, LlamaRequest, LlamaTask};
+use task::{send_request_to_task, LlmrsRequest, LlmrsTask};
 use thiserror::Error;
 use tokio::sync::{mpsc::UnboundedSender, RwLock};
-use tracing::{error};
+use tracing::error;
 
-pub type Result<T> = std::result::Result<T, LlamaError>;
+pub type Result<T> = std::result::Result<T, LlmrsError>;
 
 #[derive(Debug, Error)]
-pub enum LlamaError {
+pub enum LlmrsError {
     #[error("failed to parse model name")]
     ModelDescriptionParse,
     #[error("model weights not found")]
     WeightsNotFound,
-    #[error("failed to send backend request to llama, model task may have crashed")]
+    #[error("failed to send backend request to llmrs, model task may have crashed")]
     RequestCannotSend,
     #[error("failed to load model weights: {0}")]
     ModelLoad(#[from] LoadError),
     #[error("failed to deserialize inference parameters: {0}")]
     InferenceParametersDeserialize(serde_json::Error),
+    #[error("bad model architecture type: {0}")]
+    UnsupportedArchitecture(#[from] UnsupportedModelArchitecture),
     #[error("inference failed: {0}")]
     Inference(String),
     #[error("unable to load app data, could not find user home folder")]
     UserHomeNotFound,
 }
 
-impl Into<ProtocolError> for LlamaError {
+impl Into<ProtocolError> for LlmrsError {
     fn into(self) -> ProtocolError {
         let error_type = match &self {
-            LlamaError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
-            LlamaError::WeightsNotFound => ProtocolErrorType::BadRequest,
-            LlamaError::RequestCannotSend => ProtocolErrorType::Internal,
-            LlamaError::ModelLoad(_) => ProtocolErrorType::Internal,
-            LlamaError::InferenceParametersDeserialize(_) => ProtocolErrorType::BadRequest,
-            LlamaError::Inference(_) => ProtocolErrorType::Internal,
-            LlamaError::UserHomeNotFound => ProtocolErrorType::Internal,
+            LlmrsError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
+            LlmrsError::WeightsNotFound => ProtocolErrorType::BadRequest,
+            LlmrsError::RequestCannotSend => ProtocolErrorType::Internal,
+            LlmrsError::UnsupportedArchitecture(_) => ProtocolErrorType::Internal,
+            LlmrsError::ModelLoad(_) => ProtocolErrorType::Internal,
+            LlmrsError::InferenceParametersDeserialize(_) => ProtocolErrorType::BadRequest,
+            LlmrsError::Inference(_) => ProtocolErrorType::Internal,
+            LlmrsError::UserHomeNotFound => ProtocolErrorType::Internal,
         };
         ProtocolError {
             error_type,
@@ -54,27 +57,28 @@ impl Into<ProtocolError> for LlamaError {
 }
 
 #[derive(Clone, Deserialize)]
-pub struct LlamaWeightsConfig {
+pub struct LlmrsWeightsConfig {
     name: String,
+    architecture: String,
     context_tokens: usize,
     #[serde(default)]
-    inference_session_parameters: InferenceSessionParameters,
+    inference_session_config: InferenceSessionConfig,
 }
 
 #[derive(Clone, Deserialize)]
-pub struct LlamaConfig {
-    weights: Vec<LlamaWeightsConfig>,
+pub struct LlmrsConfig {
+    weights: Vec<LlmrsWeightsConfig>,
 }
 
-pub struct LlamaBackend {
-    config: LlamaConfig,
+pub struct LlmrsBackend {
+    config: LlmrsConfig,
 
     threads: RwLock<Vec<JoinHandle<()>>>,
-    request_senders: RwLock<HashMap<String, UnboundedSender<LlamaRequest>>>,
+    request_senders: RwLock<HashMap<String, UnboundedSender<LlmrsRequest>>>,
 }
 
-impl LlamaBackend {
-    pub fn new(config: LlamaConfig) -> Self {
+impl LlmrsBackend {
+    pub fn new(config: LlmrsConfig) -> Self {
         Self {
             config,
             threads: Default::default(),
@@ -84,11 +88,12 @@ impl LlamaBackend {
 
     pub async fn load(&self) {
         for weights_config in &self.config.weights {
-            let mut task = LlamaTask::new(weights_config.clone());
+            let name = weights_config.name.clone();
+            let mut task = LlmrsTask::new(weights_config.clone());
             self.request_senders
                 .write()
                 .await
-                .insert(weights_config.name.clone(), task.get_sender());
+                .insert(name, task.get_sender());
             self.threads.write().await.push(thread::spawn(move || {
                 if let Err(e) = task.run() {
                     error!("model task failed: {}", e);
@@ -106,23 +111,23 @@ impl LlamaBackend {
 }
 
 #[async_trait]
-impl Backend for LlamaBackend {
+impl Backend for LlmrsBackend {
     async fn generate(
         &self,
         request: BackendGenerationRequest,
     ) -> std::result::Result<BackendGenerationResponse, ProtocolError> {
         async {
             let model_description = ModelDescription::from_str(&request.model)
-                .map_err(|_| LlamaError::ModelDescriptionParse)?;
+                .map_err(|_| LlmrsError::ModelDescriptionParse)?;
 
             let request_senders = self.request_senders.read().await;
             let request_sender = request_senders
                 .get(&model_description.model_name)
-                .ok_or(LlamaError::WeightsNotFound)?;
+                .ok_or(LlmrsError::WeightsNotFound)?;
 
             Ok(send_request_to_task(request_sender, request).await?)
         }
         .await
-        .map_err(|e: LlamaError| e.into())
+        .map_err(|e: LlmrsError| e.into())
     }
 }

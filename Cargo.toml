@@ -1,7 +1,7 @@
 [workspace]
 members = [
-  "./backends/llama",
-  "./backends/llama-cli",
+  "./backends/llmrs",
+  "./backends/llmrs-cli",
   "./backends/outsource",
   "./backends/outsource-cli",
   "./core",

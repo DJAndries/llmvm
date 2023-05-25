@@ -1,10 +1,10 @@
 [package]
-name = "llmvm-llama"
+name = "llmvm-llmrs"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-llama-rs = { git = "https://github.com/rustformers/llama-rs", rev = "ec58e46fdee3388b92e628ac4afeb4f815902afb" }
+llm = { git = "https://github.com/rustformers/llm", rev = "d9f59b5b3c2d1c6d663686cee49090704ef41149" }
 llmvm-protocol = { path = "../../protocol", features = ["stdio"] }
 llmvm-util = { path = "../../util" }
 thiserror = "1.0"

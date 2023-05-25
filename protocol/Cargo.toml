@@ -19,5 +19,5 @@ tower = ["dep:tower"]
 jsonrpc = []
 stdio = ["tower", "dep:tokio", "jsonrpc"]
 http-client = ["tower", "dep:hyper", "hyper?/client", "dep:hyper-rustls"]
-http-server = ["tower", "dep:hyper", "hyper?/server"]
+http-server = ["tower", "dep:hyper", "hyper?/server", "hyper?/tcp"]
 

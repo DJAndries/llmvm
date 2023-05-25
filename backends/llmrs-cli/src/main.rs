@@ -4,7 +4,7 @@ use std::{io, process::exit};
 
 use clap::{command, Parser};
 use llmvm_backend_util::{run_backend, BackendCommand};
-use llmvm_llama::{LlamaBackend, LlamaConfig};
+use llmvm_llmrs::{LlmrsBackend, LlmrsConfig};
 use llmvm_protocol::HttpServerConfig;
 use llmvm_util::{config::load_config, logging::setup_subscriber};
 use serde::Deserialize;
@@ -28,7 +28,7 @@ struct CliConfigContent {
     http_server: Option<HttpServerConfig>,
 
     #[serde(flatten)]
-    lib_config: LlamaConfig,
+    lib_config: LlmrsConfig,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -52,7 +52,7 @@ async fn main() -> io::Result<()> {
         },
     );
 
-    let backend = Arc::new(LlamaBackend::new(config.lib_config));
+    let backend = Arc::new(LlmrsBackend::new(config.lib_config));
 
     backend.load().await;
 
