@@ -11,7 +11,7 @@ use std::{
 use hyper::{
     body::{to_bytes, Body},
     header::CONTENT_TYPE,
-    http::{uri::InvalidUri, Request as HttpRequest},
+    http::{uri::InvalidUri, HeaderValue, Request as HttpRequest},
     Method, Response as HttpResponse, StatusCode, Uri,
 };
 #[cfg(feature = "http-client")]
@@ -31,6 +31,7 @@ use crate::{
     HttpClientConfig, HttpServerConfig, ProtocolError, ProtocolErrorType, COMMAND_TIMEOUT_SECS,
 };
 
+const API_KEY_HEADER: &str = "X-API-Key";
 const GENERATE_PATH: &str = "/generate";
 
 async fn parse_request<T: DeserializeOwned>(
@@ -227,6 +228,19 @@ impl Into<StatusCode> for ProtocolErrorType {
     }
 }
 
+impl From<StatusCode> for ProtocolErrorType {
+    fn from(code: StatusCode) -> Self {
+        match code {
+            StatusCode::BAD_REQUEST => ProtocolErrorType::BadRequest,
+            StatusCode::UNAUTHORIZED => ProtocolErrorType::Unauthorized,
+            StatusCode::INTERNAL_SERVER_ERROR => ProtocolErrorType::Internal,
+            StatusCode::NOT_FOUND => ProtocolErrorType::NotFound,
+            StatusCode::METHOD_NOT_ALLOWED => ProtocolErrorType::HttpMethodNotAllowed,
+            _ => ProtocolErrorType::Internal,
+        }
+    }
+}
+
 impl Into<HttpResponse<Body>> for ProtocolError {
     fn into(self) -> HttpResponse<Body> {
         let payload = ProtocolHttpError {
@@ -259,6 +273,7 @@ where
         + Clone
         + 'static,
 {
+    config: Arc<HttpServerConfig>,
     service: Timeout<S>,
     remote_addr: Option<SocketAddr>,
     request_phantom: PhantomData<Request>,
@@ -289,6 +304,7 @@ where
     }
 
     fn call(&mut self, request: HttpRequest<Body>) -> Self::Future {
+        let config = self.config.clone();
         let mut service = self.service.clone();
         debug!(
             "received http request from {}",
@@ -296,6 +312,17 @@ where
         );
         let remote_addr = self.remote_addr.take().unwrap();
         Box::pin(async move {
+            if !config.api_keys.is_empty() {
+                let key_header = request
+                    .headers()
+                    .get(API_KEY_HEADER)
+                    .map(|v| v.to_str().unwrap_or_default())
+                    .unwrap_or_default();
+                if !config.api_keys.contains(key_header) {
+                    return Ok(generic_error(ProtocolErrorType::Unauthorized).into());
+                }
+            }
+
             let uri = request.uri().to_string();
             let request_result = Request::from_http_request(request).await;
             let response = match request_result {
@@ -348,7 +375,7 @@ where
         + Clone
         + 'static,
 {
-    config: HttpServerConfig,
+    config: Arc<HttpServerConfig>,
     service: Timeout<S>,
     request_phantom: PhantomData<Request>,
     response_phantom: PhantomData<Response>,
@@ -369,7 +396,7 @@ where
 {
     pub fn new(service: S, config: HttpServerConfig) -> Self {
         Self {
-            config,
+            config: Arc::new(config),
             service: Timeout::new(service, Duration::from_secs(COMMAND_TIMEOUT_SECS)),
             request_phantom: Default::default(),
             response_phantom: Default::default(),
@@ -392,11 +419,15 @@ where
         + 'static,
 {
     pub async fn run(self) -> Result<(), hyper::Error> {
+        let config_cl = self.config.clone();
+        let service_cl = self.service.clone();
         let make_service = make_service_fn(move |conn: &AddrStream| {
-            let service = self.service.clone();
+            let config = config_cl.clone();
+            let service = service_cl.clone();
             let remote_addr = Some(conn.remote_addr());
             async move {
                 Ok::<_, Infallible>(HttpServerConnService {
+                    config,
                     service,
                     remote_addr,
                     request_phantom: Default::default(),
@@ -422,6 +453,7 @@ where
     Response: ResponseHttpConvert<Response> + Send + 'static,
 {
     base_url: Arc<Uri>,
+    config: Arc<HttpClientConfig>,
     client: Client<HttpsConnector<HttpConnector>>,
     request_phantom: PhantomData<Request>,
     response_phantom: PhantomData<Response>,
@@ -443,6 +475,7 @@ where
         let base_url = Arc::new(Uri::from_str(&config.base_url)?);
         Ok(Self {
             base_url,
+            config: Arc::new(config),
             client,
             request_phantom: Default::default(),
             response_phantom: Default::default(),
@@ -467,10 +500,23 @@ where
     fn call(&mut self, request: Request) -> Self::Future {
         let request = request.to_http_request(&self.base_url);
         let mut client = self.client.clone();
+        let api_key = self.config.api_key.clone();
         Box::pin(async move {
-            let request = request?.ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?;
+            let mut request = request?.ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?;
+            if let Some(api_key) = api_key {
+                request
+                    .headers_mut()
+                    .insert(API_KEY_HEADER, HeaderValue::from_str(&api_key)?);
+            }
             let request_path = request.uri().path().to_string();
             let response = client.call(request).await?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(Box::new(ProtocolError {
+                    error_type: response.status().into(),
+                    error: Box::new(parse_response::<ProtocolHttpError>(response).await?),
+                }))?;
+            }
             let response = Response::from_http_response(&request_path, response).await?;
             Ok(response.ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?)
         })

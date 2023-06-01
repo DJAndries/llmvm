@@ -16,6 +16,7 @@ pub use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
+    collections::HashSet,
     error::Error,
     fmt::{Display, Formatter},
     str::FromStr,
@@ -171,17 +172,24 @@ impl Display for ModelDescription {
 // TODO: move back into http::config module which will be avail without features
 // TODO: put server and client in separate modules, get rid of cfg for each block
 #[derive(Deserialize)]
+#[serde(default)]
 pub struct HttpServerConfig {
     pub port: u16,
+    pub api_keys: HashSet<String>,
 }
 
 impl Default for HttpServerConfig {
     fn default() -> Self {
-        Self { port: 8080 }
+        Self {
+            port: 8080,
+            api_keys: HashSet::new(),
+        }
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct HttpClientConfig {
     pub base_url: String,
+    pub api_key: Option<String>,
 }
