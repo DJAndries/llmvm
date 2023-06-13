@@ -84,7 +84,9 @@ pub async fn run_backend<B: Backend + 'static>(
             }
         },
         None => {
-            StdioServer::new(BackendService::new(backend)).run().await?;
+            StdioServer::<_, _, (), _>::new(BackendService::new(backend))
+                .run()
+                .await?;
         }
     };
     Ok(())

@@ -26,7 +26,7 @@ use tower::{timeout::Timeout, Service};
 use tracing::{debug, info};
 
 use crate::{
-    services::{ServiceError, ServiceFuture},
+    services::{ServiceError, ServiceFuture, ServiceResponse},
     stdio::{BackendRequest, BackendResponse, CoreRequest, CoreResponse},
     HttpClientConfig, HttpServerConfig, ProtocolError, ProtocolErrorType, COMMAND_TIMEOUT_SECS,
 };
@@ -489,9 +489,9 @@ where
     Request: RequestHttpConvert<Request> + Send + 'static,
     Response: ResponseHttpConvert<Response> + Send + 'static,
 {
-    type Response = Response;
+    type Response = ServiceResponse<Response>;
     type Error = ServiceError;
-    type Future = ServiceFuture<Response>;
+    type Future = ServiceFuture<ServiceResponse<Response>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -518,7 +518,9 @@ where
                 }))?;
             }
             let response = Response::from_http_response(&request_path, response).await?;
-            Ok(response.ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?)
+            Ok(response
+                .map(|r| ServiceResponse::Single(r))
+                .ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?)
         })
     }
 }

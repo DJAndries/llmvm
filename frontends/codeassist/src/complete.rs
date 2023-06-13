@@ -98,7 +98,7 @@ impl From<FoldingRange> for SimpleFoldingRange {
 pub struct CodeCompleteTask {
     config: Arc<CodeAssistConfig>,
 
-    llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse>>>>,
+    llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse, ()>>>>,
     passthrough_service: LspMessageService,
     root_uri: Option<Url>,
     supports_semantic_tokens: bool,
@@ -117,7 +117,7 @@ pub struct CodeCompleteTask {
 impl CodeCompleteTask {
     pub fn new(
         config: Arc<CodeAssistConfig>,
-        llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse>>>>,
+        llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse, ()>>>>,
         passthrough_service: LspMessageService,
         server_capabilities: Option<&ServerCapabilities>,
         root_uri: Option<Url>,

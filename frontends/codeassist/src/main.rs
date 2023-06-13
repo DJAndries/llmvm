@@ -93,8 +93,8 @@ async fn main() -> Result<()> {
         child.stdout.take().unwrap(),
     );
 
-    let llmvm_core_service: Timeout<BoxedService<_, _>> = service_with_timeout(
-        build_service_from_config::<CoreRequest, CoreResponse>(
+    let llmvm_core_service: Timeout<BoxedService<_, _, _>> = service_with_timeout(
+        build_service_from_config::<CoreRequest, CoreResponse, ()>(
             LLMVM_CORE_CLI_COMMAND,
             &LLMVM_CORE_CLI_ARGS,
             config.bin_path.as_ref().map(|b| b.as_ref()),

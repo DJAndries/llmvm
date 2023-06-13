@@ -33,7 +33,7 @@ pub struct LspInterceptor {
     passthrough_service: LspMessageService,
     server_capabilities: Option<Arc<ServerCapabilities>>,
 
-    llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse>>>>,
+    llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse, ()>>>>,
 
     root_uri: Option<Url>,
     complete_task_last_id: usize,
@@ -47,7 +47,7 @@ impl LspInterceptor {
     pub fn new(
         config: Arc<CodeAssistConfig>,
         passthrough_service: LspMessageService,
-        llmvm_core_service: Timeout<BoxedService<CoreRequest, CoreResponse>>,
+        llmvm_core_service: Timeout<BoxedService<CoreRequest, CoreResponse, ()>>,
     ) -> Self {
         let (service_tx, service_rx) = mpsc::unbounded_channel();
         Self {

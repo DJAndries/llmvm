@@ -7,6 +7,9 @@ use std::{
     time::Duration,
 };
 
+use futures::stream::Stream;
+use serde::{de::DeserializeOwned, Serialize};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tower::{timeout::Timeout, Service};
 
 use crate::{
@@ -68,15 +71,22 @@ where
     }
 }
 
+pub enum ServiceResponse<Response> {
+    Single(Response),
+    Multiple(ServiceNotificationStream<Response>),
+}
+
+pub type ServiceNotificationStream<Response> =
+    Box<dyn Stream<Item = Result<Response, ServiceError>> + Send>;
 pub type ServiceError = Box<dyn Error + Send + Sync + 'static>;
 pub type ServiceFuture<Response> =
     Pin<Box<dyn Future<Output = Result<Response, ServiceError>> + Send>>;
 pub type BoxedService<Request, Response> = Box<
     dyn Service<
             Request,
-            Response = Response,
+            Response = ServiceResponse<Response>,
             Error = ServiceError,
-            Future = ServiceFuture<Response>,
+            Future = ServiceFuture<ServiceResponse<Response>>,
         > + Send
         + Sync,
 >;
@@ -85,9 +95,9 @@ impl<B> Service<BackendRequest> for BackendService<B>
 where
     B: Backend + 'static,
 {
-    type Response = BackendResponse;
+    type Response = ServiceResponse<BackendResponse>;
     type Error = ServiceError;
-    type Future = ServiceFuture<BackendResponse>;
+    type Future = ServiceFuture<ServiceResponse<BackendResponse>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -100,7 +110,7 @@ where
                 BackendRequest::Generation(req) => backend
                     .generate(req)
                     .await
-                    .map(|v| BackendResponse::Generation(v)),
+                    .map(|v| ServiceResponse::Single(BackendResponse::Generation(v))),
             }?)
         })
     }
@@ -110,9 +120,9 @@ impl<C> Service<CoreRequest> for CoreService<C>
 where
     C: Core + 'static,
 {
-    type Response = CoreResponse;
+    type Response = ServiceResponse<CoreResponse>;
     type Error = ServiceError;
-    type Future = ServiceFuture<CoreResponse>;
+    type Future = ServiceFuture<ServiceResponse<CoreResponse>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -125,8 +135,10 @@ where
                 CoreRequest::Generation(req) => core
                     .generate(req)
                     .await
-                    .map(|v| CoreResponse::Generation(v)),
-                CoreRequest::InitProject => core.init_project().map(|_| CoreResponse::InitProject),
+                    .map(|v| ServiceResponse::Single(CoreResponse::Generation(v))),
+                CoreRequest::InitProject => core
+                    .init_project()
+                    .map(|_| ServiceResponse::Single(CoreResponse::InitProject)),
             }?)
         })
     }
@@ -140,6 +152,8 @@ pub fn service_with_timeout<Request, Response>(
 
 #[cfg(all(feature = "http-client", feature = "stdio"))]
 pub mod util {
+    use serde::de::DeserializeOwned;
+
     use crate::{
         http::{HttpClient, RequestHttpConvert, ResponseHttpConvert},
         jsonrpc::JsonRpcRequest,
@@ -151,7 +165,7 @@ pub mod util {
 
     // TODO: use this function in frontends to make building services
     // more convenient
-    pub async fn build_service_from_config<Request, Response>(
+    pub async fn build_service_from_config<Request, Response, Notification>(
         command_name: &str,
         command_arguments: &[&str],
         bin_path: Option<&str>,
@@ -164,6 +178,7 @@ pub mod util {
             + Send
             + Sync
             + 'static,
+        Notification: DeserializeOwned + std::fmt::Debug + Send + Sync + 'static,
     {
         Ok(match http_client_config {
             Some(config) => Box::new(HttpClient::new(config)?),

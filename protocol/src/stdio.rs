@@ -1,8 +1,13 @@
+use futures::{
+    stream::{pending, FuturesUnordered, Map, SelectAll},
+    Stream, StreamExt,
+};
 use serde_json::Value;
 use std::{
     collections::HashMap,
     marker::PhantomData,
     path::Path,
+    pin::Pin,
     process::Stdio,
     sync::Arc,
     task::{Context, Poll},
@@ -20,6 +25,7 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
     sync::mpsc::UnboundedSender,
 };
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{error, warn};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -29,7 +35,7 @@ use crate::{
     jsonrpc::{
         JsonRpcErrorCode, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
     },
-    services::{ServiceError, ServiceFuture},
+    services::{ServiceError, ServiceFuture, ServiceNotificationStream, ServiceResponse},
     BackendGenerationRequest, BackendGenerationResponse, GenerationRequest, GenerationResponse,
     ProtocolError, ProtocolErrorType, COMMAND_TIMEOUT_SECS,
 };
@@ -37,7 +43,7 @@ use crate::{
 const GENERATION_METHOD: &str = "generation";
 const INIT_PROJECT_METHOD: &str = "init_project";
 
-// TODO: move these to lib
+// TODO: move these to lib/services
 #[derive(Clone, Serialize, Deserialize)]
 pub enum BackendRequest {
     Generation(BackendGenerationRequest),
@@ -60,6 +66,7 @@ pub enum CoreResponse {
     InitProject,
 }
 
+// TODO: move to jsonrpc and make it a method of JsonRpcRequest
 fn parse_request_from_jsonrpc_request<R: DeserializeOwned>(
     value: JsonRpcRequest,
 ) -> Result<R, StdioError> {
@@ -96,13 +103,12 @@ fn parse_from_value<R: DeserializeOwned>(value: Value) -> Result<R, StdioError> 
 }
 
 pub trait ResponseJsonRpcConvert<Request, Response> {
-    fn from_jsonrpc_response(
-        value: JsonRpcResponse,
+    fn from_jsonrpc_message(
+        value: JsonRpcMessage,
         original_request: &Request,
     ) -> Result<Response, StdioError>;
 
-    fn into_jsonrpc_response(result: Result<Response, ProtocolError>, id: Value)
-        -> JsonRpcResponse;
+    fn into_jsonrpc_message(result: Result<Response, ProtocolError>, id: Value) -> JsonRpcMessage;
 }
 
 impl TryFrom<JsonRpcRequest> for CoreRequest {
@@ -135,28 +141,36 @@ impl Into<JsonRpcRequest> for CoreRequest {
 }
 
 impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
-    fn from_jsonrpc_response(
-        value: JsonRpcResponse,
+    fn from_jsonrpc_message(
+        value: JsonRpcMessage,
         original_request: &CoreRequest,
     ) -> Result<Self, StdioError> {
-        let result = get_result_from_jsonrpc_response(value)?;
-        Ok(match original_request {
-            CoreRequest::Generation(_) => Self::Generation(parse_from_value(result)?),
-            CoreRequest::InitProject => CoreResponse::InitProject,
-        })
+        match value {
+            JsonRpcMessage::Response(resp) => {
+                let result = get_result_from_jsonrpc_response(resp)?;
+                Ok(match original_request {
+                    CoreRequest::Generation(_) => Self::Generation(parse_from_value(result)?),
+                    CoreRequest::InitProject => Self::InitProject,
+                })
+            }
+            _ => Err(StdioError {
+                error_type: ProtocolErrorType::BadRequest,
+                description: "unknown response message type".to_string(),
+            }),
+        }
     }
 
-    fn into_jsonrpc_response(
+    fn into_jsonrpc_message(
         result: Result<CoreResponse, ProtocolError>,
         id: Value,
-    ) -> JsonRpcResponse {
+    ) -> JsonRpcMessage {
         let result = result
             .map(|response| match response {
                 CoreResponse::Generation(response) => serde_json::to_value(response).unwrap(),
                 CoreResponse::InitProject => Value::Null,
             })
             .map_err(|e| e.into());
-        JsonRpcResponse::new(result, id)
+        JsonRpcResponse::new(result, id).into()
     }
 }
 
@@ -188,26 +202,34 @@ impl Into<JsonRpcRequest> for BackendRequest {
 }
 
 impl ResponseJsonRpcConvert<BackendRequest, BackendResponse> for BackendResponse {
-    fn from_jsonrpc_response(
-        value: JsonRpcResponse,
+    fn from_jsonrpc_message(
+        value: JsonRpcMessage,
         original_request: &BackendRequest,
     ) -> Result<Self, StdioError> {
-        let result = get_result_from_jsonrpc_response(value)?;
-        Ok(match original_request {
-            BackendRequest::Generation(_) => Self::Generation(parse_from_value(result)?),
-        })
+        match value {
+            JsonRpcMessage::Response(resp) => {
+                let result = get_result_from_jsonrpc_response(resp)?;
+                Ok(match original_request {
+                    BackendRequest::Generation(_) => Self::Generation(parse_from_value(result)?),
+                })
+            }
+            _ => Err(StdioError {
+                error_type: ProtocolErrorType::BadRequest,
+                description: "unknown response message type".to_string(),
+            }),
+        }
     }
 
-    fn into_jsonrpc_response(
+    fn into_jsonrpc_message(
         result: Result<BackendResponse, ProtocolError>,
         id: Value,
-    ) -> JsonRpcResponse {
+    ) -> JsonRpcMessage {
         let result = result
             .map(|response| match response {
                 BackendResponse::Generation(response) => serde_json::to_value(response).unwrap(),
             })
             .map_err(|e| e.into());
-        JsonRpcResponse::new(result, id)
+        JsonRpcResponse::new(result, id).into()
     }
 }
 
@@ -233,25 +255,47 @@ impl From<ProtocolError> for StdioError {
     }
 }
 
+struct IdentifiedNotification<Response> {
+    id: u64,
+    result: Option<Result<Response, ServiceError>>,
+}
+
+struct ServerNotificationLink<Response> {
+    id: u64,
+    stream: Pin<ServiceNotificationStream<Response>>,
+}
+
+impl<Response> Stream for ServerNotificationLink<Response> {
+    type Item = IdentifiedNotification<Response>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.stream.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => Poll::Ready(Some(IdentifiedNotification {
+                id: self.id,
+                result,
+            })),
+        }
+    }
+}
+
 pub struct StdioServer<Request, Response, S>
 where
     Request: TryFrom<JsonRpcRequest, Error = StdioError> + Send,
     Response: ResponseJsonRpcConvert<Request, Response> + Send,
     S: Service<
             Request,
-            Response = Response,
+            Response = ServiceResponse<Response>,
             Error = ServiceError,
-            Future = ServiceFuture<Response>,
+            Future = ServiceFuture<ServiceResponse<Response>>,
         > + Send
         + 'static,
 {
     service: Timeout<S>,
     stdin: BufReader<Stdin>,
     stdout: Arc<Mutex<Stdout>>,
-    message_tx: Option<UnboundedSender<JsonRpcMessage>>,
-    message_rx: UnboundedReceiver<JsonRpcMessage>,
+    notification_streams: Arc<Mutex<HashMap<u64, ServerNotificationLink<Response>>>>,
     request_phantom: PhantomData<Request>,
-    response_phantom: PhantomData<Response>,
 }
 
 impl<Request, Response, S> StdioServer<Request, Response, S>
@@ -260,23 +304,30 @@ where
     Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
     S: Service<
             Request,
-            Response = Response,
+            Response = ServiceResponse<Response>,
             Error = ServiceError,
-            Future = ServiceFuture<Response>,
+            Future = ServiceFuture<ServiceResponse<Response>>,
         > + Send
         + 'static,
 {
     pub fn new(service: S) -> Self {
-        let (message_tx, message_rx) = mpsc::unbounded_channel();
-        Self {
+        let new = Self {
             service: Timeout::new(service, Duration::from_secs(COMMAND_TIMEOUT_SECS)),
             stdin: BufReader::new(stdin()),
             stdout: Arc::new(Mutex::new(stdout())),
-            message_tx: Some(message_tx),
-            message_rx,
+            notification_streams: Default::default(),
             request_phantom: Default::default(),
-            response_phantom: Default::default(),
-        }
+        };
+        // insert dummy notification stream so that tokio::select (in main loop)
+        // does not immediately return if no streams exist
+        new.notification_streams.blocking_lock().insert(
+            u64::MAX,
+            ServerNotificationLink {
+                id: u64::MAX,
+                stream: Box::pin(pending()),
+            },
+        );
+        new
     }
 
     async fn output_message(stdout: &Mutex<Stdout>, message: JsonRpcMessage) {
@@ -291,6 +342,7 @@ where
 
     fn handle_request(&mut self, serialized_request: String) {
         let stdout = self.stdout.clone();
+        let notification_streams = self.notification_streams.clone();
 
         let value: Value = serde_json::from_str(&serialized_request).unwrap_or_default();
         let (result_future, id) = match JsonRpcMessage::try_from(value) {
@@ -300,7 +352,7 @@ where
             }
             Ok(message) => match message {
                 JsonRpcMessage::Request(jsonrpc_request) => {
-                    let id = jsonrpc_request.id.clone();
+                    let id = jsonrpc_request.id.as_u64().unwrap_or_default();
                     match Request::try_from(jsonrpc_request) {
                         Err(e) => {
                             error!("could not derive request enum from json rpc request: {e}");
@@ -316,33 +368,66 @@ where
             },
         };
         tokio::spawn(async move {
-            let result = result_future.await.map_err(ProtocolError::from);
-            Self::output_message(
-                stdout.as_ref(),
-                Response::into_jsonrpc_response(result, id).into(),
-            )
-            .await
+            let result = result_future.await;
+            match result {
+                Ok(response) => match response {
+                    ServiceResponse::Single(response) => {
+                        Self::output_message(
+                            stdout.as_ref(),
+                            Response::into_jsonrpc_message(Ok(response), id.into()),
+                        )
+                        .await;
+                    }
+                    ServiceResponse::Multiple(stream) => {
+                        notification_streams.lock().await.insert(
+                            id,
+                            ServerNotificationLink {
+                                id,
+                                stream: Pin::from(stream),
+                            },
+                        );
+                    }
+                },
+                Err(e) => {
+                    Self::output_message(
+                        stdout.as_ref(),
+                        Response::into_jsonrpc_message(Err(e.into()), id.into()),
+                    )
+                    .await
+                }
+            }
         });
-    }
-
-    pub fn get_message_sender(&mut self) -> UnboundedSender<JsonRpcMessage> {
-        self.message_tx
-            .take()
-            .expect("message sender should be present")
     }
 
     pub async fn run(mut self) -> std::io::Result<()> {
         loop {
             let mut serialized_request = String::new();
+            let mut notification_streams = self.notification_streams.lock().await;
+            let mut notification_futures = notification_streams
+                .values_mut()
+                .map(|s| s.next())
+                .collect::<FuturesUnordered<_>>();
             tokio::select! {
                 read_result = self.stdin.read_line(&mut serialized_request) => {
+                    drop(notification_futures);
+                    drop(notification_streams);
                     if read_result? == 0 {
                         break;
                     }
                     self.handle_request(serialized_request);
                 },
-                message = self.message_rx.recv() => if let Some(message) = message {
-                    Self::output_message(self.stdout.as_ref(), message).await;
+                id_notification = notification_futures.next() => {
+                    let id_notification = id_notification.unwrap().unwrap();
+                    match id_notification.result {
+                        Some(result) => {
+                            Self::output_message(self.stdout.as_ref(), Response::into_jsonrpc_message(result.map_err(|e| e.into()), id_notification.id.into())).await;
+                        },
+                        None => {
+                            Self::output_message(self.stdout.as_ref(), JsonRpcNotification::new(id_notification.id.to_string(), None).into()).await;
+                            drop(notification_futures);
+                            notification_streams.remove(&id_notification.id);
+                        }
+                    }
                 }
             }
         }
@@ -356,12 +441,12 @@ where
     Response: ResponseJsonRpcConvert<Request, Response> + Send,
 {
     request: Request,
-    response_tx: oneshot::Sender<Result<Response, StdioError>>,
+    response_tx: oneshot::Sender<Result<ServiceResponse<Response>, StdioError>>,
 }
 
-struct NotificationReceiveLink {
-    method: String,
-    notification_tx: UnboundedSender<JsonRpcNotification>,
+struct ClientNotificationLink<Request, Response> {
+    request: Request,
+    notification_tx: UnboundedSender<Result<Response, ServiceError>>,
 }
 
 pub struct StdioClient<Request, Response>
@@ -371,7 +456,6 @@ where
 {
     _child: Arc<Child>,
     to_child_tx: UnboundedSender<ClientRequestTrx<Request, Response>>,
-    notification_recv_link_tx: UnboundedSender<NotificationReceiveLink>,
 }
 
 impl<Request, Response> Clone for StdioClient<Request, Response>
@@ -383,7 +467,6 @@ where
         Self {
             _child: self._child.clone(),
             to_child_tx: self.to_child_tx.clone(),
-            notification_recv_link_tx: self.notification_recv_link_tx.clone(),
         }
     }
 }
@@ -393,9 +476,9 @@ where
     Request: Into<JsonRpcRequest> + Clone + Send + 'static,
     Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
 {
-    type Response = Response;
+    type Response = ServiceResponse<Response>;
     type Error = ServiceError;
-    type Future = ServiceFuture<Response>;
+    type Future = ServiceFuture<ServiceResponse<Response>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -436,27 +519,17 @@ where
     fn start_comm_task(
         mut stdin: ChildStdin,
         mut stdout: BufReader<ChildStdout>,
-    ) -> (
-        UnboundedSender<ClientRequestTrx<Request, Response>>,
-        UnboundedSender<NotificationReceiveLink>,
-    ) {
+    ) -> UnboundedSender<ClientRequestTrx<Request, Response>> {
         let (to_child_tx, mut to_child_rx) =
             mpsc::unbounded_channel::<ClientRequestTrx<Request, Response>>();
-        let (notification_recv_link_tx, mut notification_recv_link_rx) =
-            mpsc::unbounded_channel::<NotificationReceiveLink>();
+        let mut notification_links = HashMap::new();
         tokio::spawn(async move {
             let mut last_req_id = 0u64;
             let mut pending_reqs: HashMap<u64, ClientRequestTrx<Request, Response>> =
                 HashMap::new();
-            let mut notification_txs: HashMap<String, UnboundedSender<JsonRpcNotification>> =
-                HashMap::new();
             loop {
-                notification_txs.retain(|_, tx| !tx.is_closed());
                 let mut stdout_message = String::new();
                 tokio::select! {
-                    recv_link = notification_recv_link_rx.recv() => if let Some(recv_link) = recv_link {
-                        notification_txs.insert(recv_link.method, recv_link.notification_tx);
-                    },
                     req_trx = to_child_rx.recv() => match req_trx {
                         None => return,
                         Some(req_trx) => {
@@ -489,11 +562,31 @@ where
                                     JsonRpcMessage::Response(response) => match pending_reqs.remove(&serde_json::from_value(response.id.clone()).unwrap_or_default()) {
                                         None => warn!("received response with unknown id, ignoring"),
                                         Some(trx) => {
-                                            trx.response_tx.send(Response::from_jsonrpc_response(response, &trx.request)).ok();
+                                            trx.response_tx.send(Response::from_jsonrpc_message(response.into(), &trx.request).map(|r| ServiceResponse::Single(r))).ok();
                                         }
                                     },
-                                    JsonRpcMessage::Notification(notification) => if let Some(tx) = notification_txs.get(&notification.method) {
-                                        tx.send(notification).ok();
+                                    JsonRpcMessage::Notification(notification) => {
+                                        let id = notification.method.parse::<u64>().unwrap_or_default();
+                                        if let Some(trx) = pending_reqs.remove(&id) {
+                                            let (notification_tx, notification_rx) = mpsc::unbounded_channel();
+                                            trx.response_tx.send(Ok(ServiceResponse::Multiple(Box::new(UnboundedReceiverStream::new(notification_rx))))).ok();
+                                            notification_links.insert(id, ClientNotificationLink {
+                                                request: trx.request,
+                                                notification_tx
+                                            });
+                                        }
+                                        match notification_links.get(&id) {
+                                            None => warn!("received notification with unknown id, ignoring"),
+                                            Some(link) => match notification.params.is_some() {
+                                                true => {
+                                                    link.notification_tx.send(Response::from_jsonrpc_message(notification.into(), &link.request).map_err(|e| e.into())).ok();
+                                                },
+                                                false => {
+                                                    notification_links.remove(&id);
+                                                    pending_reqs.remove(&id);
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -502,21 +595,7 @@ where
                 }
             }
         });
-        (to_child_tx, notification_recv_link_tx)
-    }
-
-    pub fn get_notification_receiver(
-        &self,
-        method: String,
-    ) -> Option<UnboundedReceiver<JsonRpcNotification>> {
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
-        self.notification_recv_link_tx
-            .send(NotificationReceiveLink {
-                method,
-                notification_tx,
-            })
-            .ok()
-            .map(|_| notification_rx)
+        to_child_tx
     }
 
     pub async fn new(
@@ -544,11 +623,10 @@ where
         .spawn()?;
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
-        let (to_child_tx, notification_recv_link_tx) = Self::start_comm_task(stdin, stdout);
+        let to_child_tx = Self::start_comm_task(stdin, stdout);
         Ok(Self {
             _child: Arc::new(child),
             to_child_tx,
-            notification_recv_link_tx,
         })
     }
 }

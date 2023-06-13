@@ -318,7 +318,7 @@ pub struct LLMVMCoreConfig {
 }
 
 pub struct LLMVMCore {
-    clients: Mutex<HashMap<String, Timeout<BoxedService<BackendRequest, BackendResponse>>>>,
+    clients: Mutex<HashMap<String, Timeout<BoxedService<BackendRequest, BackendResponse, ()>>>>,
     config: LLMVMCoreConfig,
 }
 

@@ -116,7 +116,9 @@ async fn main() -> std::io::Result<()> {
             }
         }
         CoreCommand::StdioServer => {
-            StdioServer::new(CoreService::new(core)).run().await?;
+            StdioServer::<_, _, (), _>::new(CoreService::new(core))
+                .run()
+                .await?;
         }
         CoreCommand::HttpServer(args) => {
             let mut config = http_config.take().unwrap_or_default();
