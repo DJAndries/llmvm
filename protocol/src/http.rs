@@ -1,13 +1,17 @@
 use std::{
+    collections::VecDeque,
     convert::Infallible,
     marker::PhantomData,
     net::SocketAddr,
+    pin::Pin,
     str::FromStr,
     sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 
+use async_stream::stream;
+use futures::stream::StreamExt;
 use hyper::{
     body::{to_bytes, Body},
     header::CONTENT_TYPE,
@@ -21,14 +25,16 @@ use hyper::{server::conn::AddrStream, service::make_service_fn, Server};
 #[cfg(feature = "http-client")]
 use hyper_rustls::HttpsConnector;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 use tower::{timeout::Timeout, Service};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{
-    services::{ServiceError, ServiceFuture, ServiceResponse},
+    services::{ServiceError, ServiceFuture, ServiceNotificationStream, ServiceResponse},
     stdio::{BackendRequest, BackendResponse, CoreRequest, CoreResponse},
-    HttpClientConfig, HttpServerConfig, ProtocolError, ProtocolErrorType, COMMAND_TIMEOUT_SECS,
+    HttpClientConfig, HttpServerConfig, ProtocolError, ProtocolErrorType,
+    SerializableProtocolError, COMMAND_TIMEOUT_SECS,
 };
 
 const API_KEY_HEADER: &str = "X-API-Key";
@@ -50,7 +56,11 @@ async fn parse_response<T: DeserializeOwned>(
     let bytes = to_bytes(response)
         .await
         .map_err(|e| ProtocolError::new(ProtocolErrorType::Internal, Box::new(e)))?;
-    serde_json::from_slice(bytes.as_ref())
+    parse_response_payload(bytes.as_ref())
+}
+
+fn parse_response_payload<T: DeserializeOwned>(response: &[u8]) -> Result<T, ProtocolError> {
+    serde_json::from_slice(response)
         .map_err(|e| ProtocolError::new(ProtocolErrorType::BadRequest, Box::new(e)))
 }
 
@@ -58,9 +68,9 @@ fn serialize_to_http_request<T: Serialize>(
     base_url: &Uri,
     path: &str,
     method: Method,
-    request: T,
+    request: &T,
 ) -> Result<HttpRequest<Body>, ProtocolError> {
-    let bytes = serde_json::to_vec(&request)
+    let bytes = serde_json::to_vec(request)
         .map_err(|e| ProtocolError::new(ProtocolErrorType::Internal, Box::new(e)))?;
     let url = Uri::builder()
         .scheme(
@@ -86,12 +96,16 @@ fn serialize_to_http_request<T: Serialize>(
         .expect("should be able to create http request"))
 }
 
+fn serialize_response<T: Serialize>(response: &T) -> Result<Vec<u8>, ProtocolError> {
+    serde_json::to_vec(response)
+        .map_err(|e| ProtocolError::new(ProtocolErrorType::Internal, Box::new(e)))
+}
+
 fn serialize_to_http_response<T: Serialize>(
-    response: T,
+    response: &T,
     status: StatusCode,
 ) -> Result<HttpResponse<Body>, ProtocolError> {
-    let bytes = serde_json::to_vec(&response)
-        .map_err(|e| ProtocolError::new(ProtocolErrorType::Internal, Box::new(e)))?;
+    let bytes = serialize_response(response)?;
     Ok(HttpResponse::builder()
         .header(CONTENT_TYPE, "application/json")
         .status(status)
@@ -99,21 +113,117 @@ fn serialize_to_http_response<T: Serialize>(
         .expect("should be able to create http response"))
 }
 
-#[async_trait::async_trait]
-pub trait RequestHttpConvert<R> {
-    async fn from_http_request(request: HttpRequest<Body>) -> Result<Option<R>, ProtocolError>;
+pub fn notification_sse_response<Request, Response>(
+    notification_stream: ServiceNotificationStream<Response>,
+) -> HttpResponse<Body>
+where
+    Response: ResponseHttpConvert<Request, Response> + 'static,
+{
+    let payload_stream = Pin::from(notification_stream).map(|result| {
+        let payload =
+            HttpNotificationPayload::from(result.map_err(|e| ProtocolError::from(e)).and_then(
+                |response| {
+                    Response::to_http_response(ServiceResponse::Single(response)).map(|opt| {
+                        opt.and_then(|response| match response {
+                            ModalHttpResponse::Event(value) => Some(value),
+                            _ => None,
+                        })
+                    })
+                },
+            ));
+        let payload_str = serde_json::to_string(&payload)?;
+        Ok::<String, serde_json::Error>(format!("data: {}\n\n", payload_str))
+    });
+    HttpResponse::new(Body::wrap_stream(payload_stream))
+}
 
-    fn to_http_request(self, base_url: &Uri) -> Result<Option<HttpRequest<Body>>, ProtocolError>;
+pub fn notification_sse_stream<Request, Response>(
+    original_request: Request,
+    http_response: HttpResponse<Body>,
+) -> ServiceNotificationStream<Response>
+where
+    Request: Send + Sync + 'static,
+    Response: ResponseHttpConvert<Request, Response> + Send + Sync + 'static,
+{
+    let mut body = http_response.into_body();
+    Box::new(stream! {
+        let mut buffer = VecDeque::new();
+        while let Some(bytes_result) = body.next().await {
+            match bytes_result {
+                Err(e) => {
+                    let e: ServiceError = Box::new(e);
+                    yield Err(e);
+                    return;
+                },
+                Ok(bytes) => {
+                    buffer.extend(bytes);
+                }
+            }
+            while let Some(linebreak_pos) = buffer.iter().position(|b| b == &b'\n') {
+                let line_bytes = buffer.drain(0..linebreak_pos).collect::<Vec<_>>();
+                if let Ok(line) = std::str::from_utf8(&line_bytes) {
+                    if !line.starts_with("data: ") {
+                        continue;
+                    }
+                    if let Ok(value) = serde_json::from_str::<Value>(&line[6..]) {
+                        let resp = Response::from_http_response(ModalHttpResponse::Event(value), &original_request).await
+                            .and_then(|response| response.ok_or_else(|| generic_error(ProtocolErrorType::NotFound)))
+                            .and_then(|response| match response {
+                                ServiceResponse::Single(response) => Ok(response),
+                                _ => Err(generic_error(ProtocolErrorType::NotFound))
+                            });
+                        yield resp.map_err::<ServiceError, _>(|e| Box::new(e));
+                    }
+                }
+                buffer.drain(0..linebreak_pos);
+                buffer.remove(linebreak_pos);
+            }
+        }
+    })
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HttpNotificationPayload {
+    pub result: Option<Value>,
+    pub error: Option<SerializableProtocolError>,
+}
+
+impl From<Result<Option<Value>, ProtocolError>> for HttpNotificationPayload {
+    fn from(result: Result<Option<Value>, ProtocolError>) -> Self {
+        let result =
+            result.and_then(|r| r.ok_or_else(|| generic_error(ProtocolErrorType::NotFound)));
+        let (result, error) = match result {
+            Ok(result) => (Some(result), None),
+            Err(e) => (None, Some(e.into())),
+        };
+        Self { result, error }
+    }
+}
+
+pub enum ModalHttpResponse {
+    Single(HttpResponse<Body>),
+    Event(Value),
 }
 
 #[async_trait::async_trait]
-pub trait ResponseHttpConvert<R> {
-    async fn from_http_response(
-        request_path: &str,
-        response: HttpResponse<Body>,
-    ) -> Result<Option<R>, ProtocolError>;
+pub trait RequestHttpConvert<Request> {
+    async fn from_http_request(
+        request: HttpRequest<Body>,
+    ) -> Result<Option<Request>, ProtocolError>;
 
-    fn to_http_response(self) -> Result<Option<HttpResponse<Body>>, ProtocolError>;
+    fn to_http_request(&self, base_url: &Uri) -> Result<Option<HttpRequest<Body>>, ProtocolError>;
+}
+
+#[async_trait::async_trait]
+pub trait ResponseHttpConvert<Request, Response> {
+    async fn from_http_response(
+        response: ModalHttpResponse,
+        original_request: &Request,
+    ) -> Result<Option<ServiceResponse<Response>>, ProtocolError>;
+
+    fn to_http_response(
+        response: ServiceResponse<Response>,
+    ) -> Result<Option<ModalHttpResponse>, ProtocolError>;
 }
 
 #[async_trait::async_trait]
@@ -129,10 +239,10 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
         Ok(Some(request))
     }
 
-    fn to_http_request(self, base_url: &Uri) -> Result<Option<HttpRequest<Body>>, ProtocolError> {
+    fn to_http_request(&self, base_url: &Uri) -> Result<Option<HttpRequest<Body>>, ProtocolError> {
         let request = match self {
             CoreRequest::Generation(request) => {
-                serialize_to_http_request(base_url, GENERATE_PATH, Method::POST, request)?
+                serialize_to_http_request(base_url, GENERATE_PATH, Method::POST, &request)?
             }
             _ => return Ok(None),
         };
@@ -141,26 +251,36 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
 }
 
 #[async_trait::async_trait]
-impl ResponseHttpConvert<CoreResponse> for CoreResponse {
+impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
     async fn from_http_response(
-        request_path: &str,
-        response: HttpResponse<Body>,
-    ) -> Result<Option<Self>, ProtocolError> {
-        let response = match request_path {
-            GENERATE_PATH => CoreResponse::Generation(parse_response(response).await?),
+        response: ModalHttpResponse,
+        original_request: &CoreRequest,
+    ) -> Result<Option<ServiceResponse<Self>>, ProtocolError> {
+        let response = match response {
+            ModalHttpResponse::Single(response) => match original_request {
+                CoreRequest::Generation(_) => {
+                    CoreResponse::Generation(parse_response(response).await?)
+                }
+                _ => return Ok(None),
+            },
             _ => return Ok(None),
         };
-        Ok(Some(response))
+        Ok(Some(ServiceResponse::Single(response)))
     }
 
-    fn to_http_response(self) -> Result<Option<HttpResponse<Body>>, ProtocolError> {
-        let response = match self {
-            CoreResponse::Generation(response) => {
-                serialize_to_http_response(response, StatusCode::OK)?
-            }
+    fn to_http_response(
+        response: ServiceResponse<Self>,
+    ) -> Result<Option<ModalHttpResponse>, ProtocolError> {
+        let response = match response {
+            ServiceResponse::Single(response) => match response {
+                CoreResponse::Generation(response) => {
+                    serialize_to_http_response(&response, StatusCode::OK)?
+                }
+                _ => return Ok(None),
+            },
             _ => return Ok(None),
         };
-        Ok(Some(response))
+        Ok(Some(ModalHttpResponse::Single(response)))
     }
 }
 
@@ -177,10 +297,10 @@ impl RequestHttpConvert<BackendRequest> for BackendRequest {
         Ok(Some(request))
     }
 
-    fn to_http_request(self, base_url: &Uri) -> Result<Option<HttpRequest<Body>>, ProtocolError> {
+    fn to_http_request(&self, base_url: &Uri) -> Result<Option<HttpRequest<Body>>, ProtocolError> {
         let request = match self {
             BackendRequest::Generation(request) => {
-                serialize_to_http_request(base_url, GENERATE_PATH, Method::POST, request)?
+                serialize_to_http_request(base_url, GENERATE_PATH, Method::POST, &request)?
             }
         };
         Ok(Some(request))
@@ -188,25 +308,35 @@ impl RequestHttpConvert<BackendRequest> for BackendRequest {
 }
 
 #[async_trait::async_trait]
-impl ResponseHttpConvert<BackendResponse> for BackendResponse {
+impl ResponseHttpConvert<BackendRequest, BackendResponse> for BackendResponse {
     async fn from_http_response(
-        request_path: &str,
-        response: HttpResponse<Body>,
-    ) -> Result<Option<Self>, ProtocolError> {
-        let response = match request_path {
-            GENERATE_PATH => BackendResponse::Generation(parse_response(response).await?),
+        response: ModalHttpResponse,
+        original_request: &BackendRequest,
+    ) -> Result<Option<ServiceResponse<Self>>, ProtocolError> {
+        let response = match response {
+            ModalHttpResponse::Single(response) => match original_request {
+                BackendRequest::Generation(_) => {
+                    BackendResponse::Generation(parse_response(response).await?)
+                }
+                _ => return Ok(None),
+            },
             _ => return Ok(None),
         };
-        Ok(Some(response))
+        Ok(Some(ServiceResponse::Single(response)))
     }
 
-    fn to_http_response(self) -> Result<Option<HttpResponse<Body>>, ProtocolError> {
-        let response = match self {
-            BackendResponse::Generation(response) => {
-                serialize_to_http_response(response, StatusCode::OK)?
-            }
+    fn to_http_response(
+        response: ServiceResponse<Self>,
+    ) -> Result<Option<ModalHttpResponse>, ProtocolError> {
+        let response = match response {
+            ServiceResponse::Single(response) => match response {
+                BackendResponse::Generation(response) => {
+                    serialize_to_http_response(&response, StatusCode::OK)?
+                }
+            },
+            _ => return Ok(None),
         };
-        Ok(Some(response))
+        Ok(Some(ModalHttpResponse::Single(response)))
     }
 }
 
@@ -246,7 +376,7 @@ impl Into<HttpResponse<Body>> for ProtocolError {
         let payload = ProtocolHttpError {
             error: self.error.to_string(),
         };
-        serialize_to_http_response(payload, self.error_type.into())
+        serialize_to_http_response(&payload, self.error_type.into())
             .expect("should serialize error into http response")
     }
 }
@@ -263,12 +393,12 @@ fn generic_error(error_type: ProtocolErrorType) -> ProtocolError {
 struct HttpServerConnService<Request, Response, S>
 where
     Request: RequestHttpConvert<Request>,
-    Response: ResponseHttpConvert<Response>,
+    Response: ResponseHttpConvert<Request, Response>,
     S: Service<
             Request,
-            Response = Response,
+            Response = ServiceResponse<Response>,
             Error = ServiceError,
-            Future = ServiceFuture<Response>,
+            Future = ServiceFuture<ServiceResponse<Response>>,
         > + Send
         + Clone
         + 'static,
@@ -285,12 +415,12 @@ impl<Request, Response, S> Service<HttpRequest<Body>>
     for HttpServerConnService<Request, Response, S>
 where
     Request: RequestHttpConvert<Request> + Send,
-    Response: ResponseHttpConvert<Response> + Send,
+    Response: ResponseHttpConvert<Request, Response> + Send,
     S: Service<
             Request,
-            Response = Response,
+            Response = ServiceResponse<Response>,
             Error = ServiceError,
-            Future = ServiceFuture<Response>,
+            Future = ServiceFuture<ServiceResponse<Response>>,
         > + Send
         + Clone
         + 'static,
@@ -332,8 +462,14 @@ where
                         response
                             .map(|response| {
                                 // Map an Ok service response into an http response
-                                response
-                                    .to_http_response()
+                                Response::to_http_response(response)
+                                    .map(|r| r.and_then(|r| match r {
+                                        ModalHttpResponse::Single(r) => Some(r),
+                                        ModalHttpResponse::Event(_) => {
+                                            warn!("unexpected event response returned from http response conversion, returning 404");
+                                            None
+                                        }
+                                    }))
                                     .unwrap_or_else(|e| Some(e.into()))
                                     .unwrap_or_else(|| {
                                         generic_error(ProtocolErrorType::NotFound).into()
@@ -365,12 +501,12 @@ where
 pub struct HttpServer<Request, Response, S>
 where
     Request: RequestHttpConvert<Request>,
-    Response: ResponseHttpConvert<Response>,
+    Response: ResponseHttpConvert<Request, Response>,
     S: Service<
             Request,
-            Response = Response,
+            Response = ServiceResponse<Response>,
             Error = ServiceError,
-            Future = ServiceFuture<Response>,
+            Future = ServiceFuture<ServiceResponse<Response>>,
         > + Send
         + Clone
         + 'static,
@@ -384,12 +520,12 @@ where
 impl<Request, Response, S> HttpServer<Request, Response, S>
 where
     Request: RequestHttpConvert<Request>,
-    Response: ResponseHttpConvert<Response>,
+    Response: ResponseHttpConvert<Request, Response>,
     S: Service<
             Request,
-            Response = Response,
+            Response = ServiceResponse<Response>,
             Error = ServiceError,
-            Future = ServiceFuture<Response>,
+            Future = ServiceFuture<ServiceResponse<Response>>,
         > + Send
         + Clone
         + 'static,
@@ -408,12 +544,12 @@ where
 impl<Request, Response, S> HttpServer<Request, Response, S>
 where
     Request: RequestHttpConvert<Request> + Send + 'static,
-    Response: ResponseHttpConvert<Response> + Send + 'static,
+    Response: ResponseHttpConvert<Request, Response> + Send + 'static,
     S: Service<
             Request,
-            Response = Response,
+            Response = ServiceResponse<Response>,
             Error = ServiceError,
-            Future = ServiceFuture<Response>,
+            Future = ServiceFuture<ServiceResponse<Response>>,
         > + Send
         + Clone
         + 'static,
@@ -450,7 +586,7 @@ where
 pub struct HttpClient<Request, Response>
 where
     Request: RequestHttpConvert<Request> + Send + 'static,
-    Response: ResponseHttpConvert<Response> + Send + 'static,
+    Response: ResponseHttpConvert<Request, Response> + Send + 'static,
 {
     base_url: Arc<Uri>,
     config: Arc<HttpClientConfig>,
@@ -463,7 +599,7 @@ where
 impl<Request, Response> HttpClient<Request, Response>
 where
     Request: RequestHttpConvert<Request> + Send + 'static,
-    Response: ResponseHttpConvert<Response> + Send + 'static,
+    Response: ResponseHttpConvert<Request, Response> + Send + 'static,
 {
     pub fn new(config: HttpClientConfig) -> Result<Self, InvalidUri> {
         let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -486,8 +622,8 @@ where
 #[cfg(feature = "http-client")]
 impl<Request, Response> Service<Request> for HttpClient<Request, Response>
 where
-    Request: RequestHttpConvert<Request> + Send + 'static,
-    Response: ResponseHttpConvert<Response> + Send + 'static,
+    Request: RequestHttpConvert<Request> + Send + Sync + 'static,
+    Response: ResponseHttpConvert<Request, Response> + Send + 'static,
 {
     type Response = ServiceResponse<Response>;
     type Error = ServiceError;
@@ -498,18 +634,18 @@ where
     }
 
     fn call(&mut self, request: Request) -> Self::Future {
-        let request = request.to_http_request(&self.base_url);
+        let http_request = request.to_http_request(&self.base_url);
         let mut client = self.client.clone();
         let api_key = self.config.api_key.clone();
         Box::pin(async move {
-            let mut request = request?.ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?;
+            let mut http_request =
+                http_request?.ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?;
             if let Some(api_key) = api_key {
-                request
+                http_request
                     .headers_mut()
                     .insert(API_KEY_HEADER, HeaderValue::from_str(&api_key)?);
             }
-            let request_path = request.uri().path().to_string();
-            let response = client.call(request).await?;
+            let response = client.call(http_request).await?;
             let status = response.status();
             if !status.is_success() {
                 return Err(Box::new(ProtocolError {
@@ -517,10 +653,9 @@ where
                     error: Box::new(parse_response::<ProtocolHttpError>(response).await?),
                 }))?;
             }
-            let response = Response::from_http_response(&request_path, response).await?;
-            Ok(response
-                .map(|r| ServiceResponse::Single(r))
-                .ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?)
+            let response =
+                Response::from_http_response(ModalHttpResponse::Single(response), &request).await?;
+            Ok(response.ok_or_else(|| generic_error(ProtocolErrorType::NotFound))?)
         })
     }
 }

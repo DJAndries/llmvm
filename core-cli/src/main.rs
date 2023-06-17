@@ -116,7 +116,7 @@ async fn main() -> std::io::Result<()> {
             }
         }
         CoreCommand::StdioServer => {
-            StdioServer::<_, _, (), _>::new(CoreService::new(core))
+            StdioServer::<_, _, _>::new(CoreService::new(core))
                 .run()
                 .await?;
         }

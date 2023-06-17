@@ -157,7 +157,7 @@ pub mod util {
     use crate::{
         http::{HttpClient, RequestHttpConvert, ResponseHttpConvert},
         jsonrpc::JsonRpcRequest,
-        stdio::{ResponseJsonRpcConvert, StdioClient},
+        stdio::{RequestJsonRpcConvert, ResponseJsonRpcConvert, StdioClient},
         HttpClientConfig,
     };
 
@@ -172,8 +172,9 @@ pub mod util {
         http_client_config: Option<HttpClientConfig>,
     ) -> Result<BoxedService<Request, Response>, ServiceError>
     where
-        Request: RequestHttpConvert<Request> + Into<JsonRpcRequest> + Send + Sync + Clone + 'static,
-        Response: ResponseHttpConvert<Response>
+        Request:
+            RequestHttpConvert<Request> + RequestJsonRpcConvert<Request> + Send + Sync + 'static,
+        Response: ResponseHttpConvert<Request, Response>
             + ResponseJsonRpcConvert<Request, Response>
             + Send
             + Sync

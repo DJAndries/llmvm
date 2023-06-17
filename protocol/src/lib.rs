@@ -60,6 +60,22 @@ impl From<Box<dyn Error + Send + Sync + 'static>> for ProtocolError {
     }
 }
 
+#[derive(Clone, Debug, thiserror::Error, Serialize, Deserialize)]
+#[error("{description}")]
+pub struct SerializableProtocolError {
+    pub error_type: ProtocolErrorType,
+    pub description: String,
+}
+
+impl From<ProtocolError> for SerializableProtocolError {
+    fn from(value: ProtocolError) -> Self {
+        Self {
+            error_type: value.error_type,
+            description: value.error.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {

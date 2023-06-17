@@ -34,6 +34,12 @@ pub struct JsonRpcNotification {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcNotificationResultParams {
+    pub result: Option<Value>,
+    pub error: Option<JsonRpcResponseError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcResponseError {
     pub code: i32,
     pub message: String,
@@ -105,19 +111,25 @@ impl JsonRpcRequest {
     }
 }
 
+fn get_result_and_error(
+    result: Result<Value, ProtocolError>,
+) -> (Option<Value>, Option<JsonRpcResponseError>) {
+    match result {
+        Ok(result) => (Some(result), None),
+        Err(e) => (
+            None,
+            Some(JsonRpcResponseError {
+                code: JsonRpcErrorCode::from(e.error_type.clone()) as i32,
+                message: e.to_string(),
+                data: None,
+            }),
+        ),
+    }
+}
+
 impl JsonRpcResponse {
     pub fn new(result: Result<Value, ProtocolError>, id: Value) -> Self {
-        let (error, result) = match result {
-            Ok(result) => (None, Some(result)),
-            Err(e) => (
-                Some(JsonRpcResponseError {
-                    code: JsonRpcErrorCode::from(e.error_type.clone()) as i32,
-                    message: e.to_string(),
-                    data: None,
-                }),
-                None,
-            ),
-        };
+        let (result, error) = get_result_and_error(result);
         JsonRpcResponse {
             jsonrpc_version: JSON_RPC_VERSION.to_string(),
             result,
@@ -134,6 +146,21 @@ impl JsonRpcNotification {
             method,
             params,
         }
+    }
+
+    pub fn new_with_result_params(method: String, result: Result<Value, ProtocolError>) -> Self {
+        JsonRpcNotification {
+            jsonrpc_version: JSON_RPC_VERSION.to_string(),
+            method,
+            params: serde_json::to_value(JsonRpcNotificationResultParams::new(result)).ok(),
+        }
+    }
+}
+
+impl JsonRpcNotificationResultParams {
+    pub fn new(result: Result<Value, ProtocolError>) -> Self {
+        let (result, error) = get_result_and_error(result);
+        Self { result, error }
     }
 }
 

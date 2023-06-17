@@ -5,14 +5,14 @@ use handlebars::{
     RenderError, Renderable, StringOutput,
 };
 use llmvm_protocol::http::HttpClient;
-use llmvm_protocol::services::{service_with_timeout, BoxedService, ServiceError};
-use llmvm_protocol::stdio::{BackendRequest, BackendResponse, StdioClient, StdioError};
+use llmvm_protocol::services::{service_with_timeout, BoxedService, ServiceResponse};
+use llmvm_protocol::stdio::{BackendRequest, BackendResponse, StdioClient};
 use llmvm_protocol::tower::timeout::Timeout;
 use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, Core, GenerationParameters,
     GenerationRequest, GenerationResponse, HttpClientConfig, HttpServerConfig, Message,
-    MessageRole, ModelDescription, ProtocolError, ProtocolErrorType,
+    MessageRole, ModelDescription, ProtocolError, ProtocolErrorType, SerializableProtocolError,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use rand::distributions::Alphanumeric;
@@ -22,7 +22,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use std::fs::create_dir;
-use std::time::Duration;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -66,7 +65,7 @@ pub enum CoreError {
     #[error("failed to parse model name")]
     ModelDescriptionParse,
     #[error("backend error (via stdio): {0}")]
-    BackendStdio(#[from] StdioError),
+    BackendStdio(#[from] SerializableProtocolError),
     #[error("backend error: {0}")]
     Protocol(#[from] ProtocolError),
     #[error("tempate render error: {0}")]
@@ -77,6 +76,8 @@ pub enum CoreError {
     MissingParameter(&'static str),
     #[error("failed to create http backend service")]
     HttpServiceCreate,
+    #[error("unexpected service response type")]
+    UnexpectedServiceResponse,
 }
 
 impl Into<ProtocolError> for CoreError {
@@ -98,6 +99,7 @@ impl Into<ProtocolError> for CoreError {
             CoreError::MissingParameters => ProtocolErrorType::BadRequest,
             CoreError::MissingParameter(_) => ProtocolErrorType::BadRequest,
             CoreError::HttpServiceCreate => ProtocolErrorType::Internal,
+            CoreError::UnexpectedServiceResponse => ProtocolErrorType::Internal,
         };
         ProtocolError {
             error_type,
@@ -318,7 +320,7 @@ pub struct LLMVMCoreConfig {
 }
 
 pub struct LLMVMCore {
-    clients: Mutex<HashMap<String, Timeout<BoxedService<BackendRequest, BackendResponse, ()>>>>,
+    clients: Mutex<HashMap<String, Timeout<BoxedService<BackendRequest, BackendResponse>>>>,
     config: LLMVMCoreConfig,
 }
 
@@ -377,9 +379,12 @@ impl LLMVMCore {
         let resp = resp_future
             .await
             .map_err(|e| CoreError::Protocol(e.into()))?;
-        Ok(match resp {
-            BackendResponse::Generation(response) => response,
-        })
+        match resp {
+            ServiceResponse::Single(response) => match response {
+                BackendResponse::Generation(response) => Ok(response),
+            },
+            _ => Err(CoreError::UnexpectedServiceResponse),
+        }
     }
 
     pub async fn close_client(&self, model: &str) {

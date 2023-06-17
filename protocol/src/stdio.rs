@@ -1,5 +1,5 @@
 use futures::{
-    stream::{pending, FuturesUnordered, Map, SelectAll},
+    stream::{pending, FuturesUnordered},
     Stream, StreamExt,
 };
 use serde_json::Value;
@@ -13,11 +13,10 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
-use thiserror::Error;
 use tokio::{
     io::{stdin, stdout, AsyncBufReadExt, AsyncWriteExt, BufReader, Stdin, Stdout},
     sync::{
-        mpsc::{self, UnboundedReceiver},
+        mpsc::{self},
         oneshot, Mutex,
     },
 };
@@ -37,14 +36,14 @@ use crate::{
     },
     services::{ServiceError, ServiceFuture, ServiceNotificationStream, ServiceResponse},
     BackendGenerationRequest, BackendGenerationResponse, GenerationRequest, GenerationResponse,
-    ProtocolError, ProtocolErrorType, COMMAND_TIMEOUT_SECS,
+    ProtocolError, ProtocolErrorType, SerializableProtocolError, COMMAND_TIMEOUT_SECS,
 };
 
 const GENERATION_METHOD: &str = "generation";
 const INIT_PROJECT_METHOD: &str = "init_project";
 
 // TODO: move these to lib/services
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub enum BackendRequest {
     Generation(BackendGenerationRequest),
 }
@@ -54,7 +53,7 @@ pub enum BackendResponse {
     Generation(BackendGenerationResponse),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub enum CoreRequest {
     Generation(GenerationRequest),
     InitProject,
@@ -69,66 +68,72 @@ pub enum CoreResponse {
 // TODO: move to jsonrpc and make it a method of JsonRpcRequest
 fn parse_request_from_jsonrpc_request<R: DeserializeOwned>(
     value: JsonRpcRequest,
-) -> Result<R, StdioError> {
-    let params = value.params.ok_or_else(|| StdioError {
+) -> Result<R, SerializableProtocolError> {
+    let params = value.params.ok_or_else(|| SerializableProtocolError {
         error_type: ProtocolErrorType::BadRequest,
         description: "missing parameters".to_string(),
     })?;
 
-    serde_json::from_value::<R>(params).map_err(|error| StdioError {
+    serde_json::from_value::<R>(params).map_err(|error| SerializableProtocolError {
         error_type: ProtocolErrorType::BadRequest,
         description: error.to_string(),
     })
 }
 
-fn get_result_from_jsonrpc_response(value: JsonRpcResponse) -> Result<Value, StdioError> {
+fn get_result_from_jsonrpc_response(
+    value: JsonRpcResponse,
+) -> Result<Value, SerializableProtocolError> {
     if let Some(error) = value.error {
         let jsonrpc_error_type = JsonRpcErrorCode::from(error.code);
-        return Err(StdioError {
+        return Err(SerializableProtocolError {
             error_type: jsonrpc_error_type.into(),
             description: error.message,
         });
     }
-    value.result.ok_or(StdioError {
+    value.result.ok_or(SerializableProtocolError {
         error_type: ProtocolErrorType::BadRequest,
         description: "result not found in response".to_string(),
     })
 }
 
-fn parse_from_value<R: DeserializeOwned>(value: Value) -> Result<R, StdioError> {
-    serde_json::from_value::<R>(value).map_err(|error| StdioError {
+fn parse_from_value<R: DeserializeOwned>(value: Value) -> Result<R, SerializableProtocolError> {
+    serde_json::from_value::<R>(value).map_err(|error| SerializableProtocolError {
         error_type: ProtocolErrorType::BadRequest,
         description: error.to_string(),
     })
+}
+
+pub trait RequestJsonRpcConvert<Request> {
+    fn from_jsonrpc_request(
+        value: JsonRpcRequest,
+    ) -> Result<Option<Request>, SerializableProtocolError>;
+
+    fn into_jsonrpc_request(&self) -> JsonRpcRequest;
 }
 
 pub trait ResponseJsonRpcConvert<Request, Response> {
     fn from_jsonrpc_message(
         value: JsonRpcMessage,
         original_request: &Request,
-    ) -> Result<Response, StdioError>;
+    ) -> Result<Option<Response>, SerializableProtocolError>;
 
     fn into_jsonrpc_message(result: Result<Response, ProtocolError>, id: Value) -> JsonRpcMessage;
 }
 
-impl TryFrom<JsonRpcRequest> for CoreRequest {
-    type Error = StdioError;
-
-    fn try_from(value: JsonRpcRequest) -> Result<Self, StdioError> {
-        match value.method.as_str() {
-            GENERATION_METHOD => Ok(CoreRequest::Generation(parse_request_from_jsonrpc_request(
-                value,
-            )?)),
-            INIT_PROJECT_METHOD => Ok(CoreRequest::InitProject),
-            _ => Err(StdioError {
-                error_type: ProtocolErrorType::BadRequest,
-                description: "unknown request type".to_string(),
-            }),
-        }
+impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
+    fn from_jsonrpc_request(
+        value: JsonRpcRequest,
+    ) -> Result<Option<Self>, SerializableProtocolError> {
+        Ok(Some(match value.method.as_str() {
+            GENERATION_METHOD => {
+                CoreRequest::Generation(parse_request_from_jsonrpc_request(value)?)
+            }
+            INIT_PROJECT_METHOD => CoreRequest::InitProject,
+            _ => return Ok(None),
+        }))
     }
-}
-impl Into<JsonRpcRequest> for CoreRequest {
-    fn into(self) -> JsonRpcRequest {
+
+    fn into_jsonrpc_request(&self) -> JsonRpcRequest {
         let (method, params) = match self {
             CoreRequest::Generation(request) => (
                 GENERATION_METHOD,
@@ -144,19 +149,17 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
     fn from_jsonrpc_message(
         value: JsonRpcMessage,
         original_request: &CoreRequest,
-    ) -> Result<Self, StdioError> {
+    ) -> Result<Option<Self>, SerializableProtocolError> {
         match value {
             JsonRpcMessage::Response(resp) => {
                 let result = get_result_from_jsonrpc_response(resp)?;
-                Ok(match original_request {
+                Ok(Some(match original_request {
                     CoreRequest::Generation(_) => Self::Generation(parse_from_value(result)?),
                     CoreRequest::InitProject => Self::InitProject,
-                })
+                    _ => return Ok(None),
+                }))
             }
-            _ => Err(StdioError {
-                error_type: ProtocolErrorType::BadRequest,
-                description: "unknown response message type".to_string(),
-            }),
+            _ => Ok(None),
         }
     }
 
@@ -164,34 +167,28 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
         result: Result<CoreResponse, ProtocolError>,
         id: Value,
     ) -> JsonRpcMessage {
-        let result = result
-            .map(|response| match response {
-                CoreResponse::Generation(response) => serde_json::to_value(response).unwrap(),
-                CoreResponse::InitProject => Value::Null,
-            })
-            .map_err(|e| e.into());
+        let result = result.map(|response| match response {
+            CoreResponse::Generation(response) => serde_json::to_value(response).unwrap(),
+            CoreResponse::InitProject => Value::Null,
+        });
         JsonRpcResponse::new(result, id).into()
     }
 }
 
-impl TryFrom<JsonRpcRequest> for BackendRequest {
-    type Error = StdioError;
-
-    fn try_from(value: JsonRpcRequest) -> Result<Self, StdioError> {
-        match value.method.as_str() {
-            GENERATION_METHOD => Ok(BackendRequest::Generation(
-                parse_request_from_jsonrpc_request(value)?,
-            )),
-            _ => Err(StdioError {
-                error_type: ProtocolErrorType::BadRequest,
-                description: "unknown request type".to_string(),
-            }),
-        }
+impl RequestJsonRpcConvert<BackendRequest> for BackendRequest {
+    fn from_jsonrpc_request(
+        value: JsonRpcRequest,
+    ) -> Result<Option<Self>, SerializableProtocolError> {
+        Ok(Some(match value.method.as_str() {
+            GENERATION_METHOD => {
+                BackendRequest::Generation(parse_request_from_jsonrpc_request(value)?)
+            }
+            _ => return Ok(None),
+        }))
     }
-}
-impl Into<JsonRpcRequest> for BackendRequest {
-    fn into(self) -> JsonRpcRequest {
-        let (method, params) = match self {
+
+    fn into_jsonrpc_request(&self) -> JsonRpcRequest {
+        let (method, params) = match &self {
             BackendRequest::Generation(generation_response) => (
                 GENERATION_METHOD,
                 Some(serde_json::to_value(generation_response).unwrap()),
@@ -205,19 +202,16 @@ impl ResponseJsonRpcConvert<BackendRequest, BackendResponse> for BackendResponse
     fn from_jsonrpc_message(
         value: JsonRpcMessage,
         original_request: &BackendRequest,
-    ) -> Result<Self, StdioError> {
-        match value {
+    ) -> Result<Option<Self>, SerializableProtocolError> {
+        Ok(Some(match value {
             JsonRpcMessage::Response(resp) => {
                 let result = get_result_from_jsonrpc_response(resp)?;
-                Ok(match original_request {
+                match original_request {
                     BackendRequest::Generation(_) => Self::Generation(parse_from_value(result)?),
-                })
+                }
             }
-            _ => Err(StdioError {
-                error_type: ProtocolErrorType::BadRequest,
-                description: "unknown response message type".to_string(),
-            }),
-        }
+            _ => return Ok(None),
+        }))
     }
 
     fn into_jsonrpc_message(
@@ -237,22 +231,6 @@ fn serialize_payload<R: Serialize>(payload: &R) -> String {
     let mut serialized = serde_json::to_string(payload).unwrap();
     serialized.push_str("\n");
     serialized
-}
-
-#[derive(Clone, Debug, Error, Serialize, Deserialize)]
-#[error("{description}")]
-pub struct StdioError {
-    pub error_type: ProtocolErrorType,
-    pub description: String,
-}
-
-impl From<ProtocolError> for StdioError {
-    fn from(error: ProtocolError) -> Self {
-        Self {
-            error_type: error.error_type,
-            description: error.error.to_string(),
-        }
-    }
 }
 
 struct IdentifiedNotification<Response> {
@@ -281,7 +259,7 @@ impl<Response> Stream for ServerNotificationLink<Response> {
 
 pub struct StdioServer<Request, Response, S>
 where
-    Request: TryFrom<JsonRpcRequest, Error = StdioError> + Send,
+    Request: RequestJsonRpcConvert<Request> + Send,
     Response: ResponseJsonRpcConvert<Request, Response> + Send,
     S: Service<
             Request,
@@ -300,7 +278,7 @@ where
 
 impl<Request, Response, S> StdioServer<Request, Response, S>
 where
-    Request: TryFrom<JsonRpcRequest, Error = StdioError> + Send,
+    Request: RequestJsonRpcConvert<Request> + Send + 'static,
     Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
     S: Service<
             Request,
@@ -353,12 +331,18 @@ where
             Ok(message) => match message {
                 JsonRpcMessage::Request(jsonrpc_request) => {
                     let id = jsonrpc_request.id.as_u64().unwrap_or_default();
-                    match Request::try_from(jsonrpc_request) {
+                    match Request::from_jsonrpc_request(jsonrpc_request) {
                         Err(e) => {
                             error!("could not derive request enum from json rpc request: {e}");
                             return;
                         }
-                        Ok(request) => (self.service.call(request), id),
+                        Ok(request) => match request {
+                            None => {
+                                error!("unknown json rpc request received");
+                                return;
+                            }
+                            Some(request) => (self.service.call(request), id),
+                        },
                     }
                 }
                 _ => {
@@ -437,11 +421,11 @@ where
 
 struct ClientRequestTrx<Request, Response>
 where
-    Request: Into<JsonRpcRequest> + Send,
+    Request: RequestJsonRpcConvert<Request> + Send,
     Response: ResponseJsonRpcConvert<Request, Response> + Send,
 {
     request: Request,
-    response_tx: oneshot::Sender<Result<ServiceResponse<Response>, StdioError>>,
+    response_tx: oneshot::Sender<Result<ServiceResponse<Response>, SerializableProtocolError>>,
 }
 
 struct ClientNotificationLink<Request, Response> {
@@ -451,7 +435,7 @@ struct ClientNotificationLink<Request, Response> {
 
 pub struct StdioClient<Request, Response>
 where
-    Request: Into<JsonRpcRequest> + Clone + Send + 'static,
+    Request: RequestJsonRpcConvert<Request> + Send + 'static,
     Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
 {
     _child: Arc<Child>,
@@ -460,7 +444,7 @@ where
 
 impl<Request, Response> Clone for StdioClient<Request, Response>
 where
-    Request: Into<JsonRpcRequest> + Clone + Send + 'static,
+    Request: RequestJsonRpcConvert<Request> + Send + 'static,
     Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
 {
     fn clone(&self) -> Self {
@@ -473,7 +457,7 @@ where
 
 impl<Request, Response> Service<Request> for StdioClient<Request, Response>
 where
-    Request: Into<JsonRpcRequest> + Clone + Send + 'static,
+    Request: RequestJsonRpcConvert<Request> + Send + 'static,
     Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
 {
     type Response = ServiceResponse<Response>;
@@ -493,11 +477,11 @@ where
                     request,
                     response_tx,
                 })
-                .map_err(|_| StdioError {
+                .map_err(|_| SerializableProtocolError {
                     error_type: ProtocolErrorType::Internal,
                     description: "should be able to send stdio request to comm task".to_string(),
                 })?;
-            Ok(response_rx.await.map_err(|_| StdioError {
+            Ok(response_rx.await.map_err(|_| SerializableProtocolError {
                 error_type: ProtocolErrorType::Internal,
                 description: "should be able to recv response for stdio request from comm task"
                     .to_string(),
@@ -508,7 +492,7 @@ where
 
 impl<Request, Response> StdioClient<Request, Response>
 where
-    Request: Into<JsonRpcRequest> + Clone + Send + 'static,
+    Request: RequestJsonRpcConvert<Request> + Send + 'static,
     Response: ResponseJsonRpcConvert<Request, Response> + Send + 'static,
 {
     async fn output_message(stdin: &mut ChildStdin, message: JsonRpcMessage) {
@@ -533,7 +517,7 @@ where
                     req_trx = to_child_rx.recv() => match req_trx {
                         None => return,
                         Some(req_trx) => {
-                            let mut jsonrpc_request: JsonRpcRequest = req_trx.request.clone().into();
+                            let mut jsonrpc_request = req_trx.request.into_jsonrpc_request();
                             let id = last_req_id + 1;
                             jsonrpc_request.id = serde_json::to_value(id).unwrap();
 
@@ -554,7 +538,7 @@ where
                                 Ok(message) => match message {
                                     JsonRpcMessage::Request(request) => Self::output_message(&mut stdin, JsonRpcResponse::new(Err(ProtocolError {
                                         error_type: ProtocolErrorType::BadRequest,
-                                        error: Box::new(StdioError {
+                                        error: Box::new(SerializableProtocolError {
                                             error_type: ProtocolErrorType::BadRequest,
                                             description: "client does not support serving requests".to_string()
                                         })
@@ -562,7 +546,17 @@ where
                                     JsonRpcMessage::Response(response) => match pending_reqs.remove(&serde_json::from_value(response.id.clone()).unwrap_or_default()) {
                                         None => warn!("received response with unknown id, ignoring"),
                                         Some(trx) => {
-                                            trx.response_tx.send(Response::from_jsonrpc_message(response.into(), &trx.request).map(|r| ServiceResponse::Single(r))).ok();
+                                            let result = match Response::from_jsonrpc_message(response.into(), &trx.request) {
+                                                Ok(response) => match response {
+                                                    None => {
+                                                        error!("unknown json rpc notification type received");
+                                                        return;
+                                                    },
+                                                    Some(response) => Ok(ServiceResponse::Single(response))
+                                                },
+                                                Err(e) => Err(e.into())
+                                            };
+                                            trx.response_tx.send(result).ok();
                                         }
                                     },
                                     JsonRpcMessage::Notification(notification) => {
@@ -579,7 +573,17 @@ where
                                             None => warn!("received notification with unknown id, ignoring"),
                                             Some(link) => match notification.params.is_some() {
                                                 true => {
-                                                    link.notification_tx.send(Response::from_jsonrpc_message(notification.into(), &link.request).map_err(|e| e.into())).ok();
+                                                    let result = match Response::from_jsonrpc_message(notification.into(), &link.request) {
+                                                        Ok(notification) => match notification {
+                                                            None => {
+                                                                error!("unknown json rpc notification type received");
+                                                                return;
+                                                            },
+                                                            Some(notification) => Ok(notification)
+                                                        },
+                                                        Err(e) => Err(e.into())
+                                                    };
+                                                    link.notification_tx.send(result).ok();
                                                 },
                                                 false => {
                                                     notification_links.remove(&id);

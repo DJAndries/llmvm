@@ -9,7 +9,7 @@ use std::{
 use anyhow::{anyhow, bail, Result};
 use futures::{future::join_all, Future};
 use llmvm_protocol::{
-    services::{BoxedService, ServiceError, ServiceFuture},
+    services::{BoxedService, ServiceError, ServiceFuture, ServiceResponse},
     stdio::{CoreRequest, CoreResponse, StdioClient},
     tower::timeout::future::ResponseFuture,
     GenerationParameters, GenerationRequest,
@@ -98,7 +98,7 @@ impl From<FoldingRange> for SimpleFoldingRange {
 pub struct CodeCompleteTask {
     config: Arc<CodeAssistConfig>,
 
-    llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse, ()>>>>,
+    llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse>>>>,
     passthrough_service: LspMessageService,
     root_uri: Option<Url>,
     supports_semantic_tokens: bool,
@@ -117,7 +117,7 @@ pub struct CodeCompleteTask {
 impl CodeCompleteTask {
     pub fn new(
         config: Arc<CodeAssistConfig>,
-        llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse, ()>>>>,
+        llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse>>>>,
         passthrough_service: LspMessageService,
         server_capabilities: Option<&ServerCapabilities>,
         root_uri: Option<Url>,
@@ -413,7 +413,7 @@ impl CodeCompleteTask {
         &mut self,
         preset: String,
         prompt_params: Value,
-    ) -> ResponseFuture<ServiceFuture<CoreResponse>> {
+    ) -> ResponseFuture<ServiceFuture<ServiceResponse<CoreResponse>>> {
         self.llmvm_core_service
             .lock()
             .await
@@ -428,16 +428,19 @@ impl CodeCompleteTask {
             }))
     }
     async fn handle_generation_response(
-        response_future: ResponseFuture<ServiceFuture<CoreResponse>>,
+        response_future: ResponseFuture<ServiceFuture<ServiceResponse<CoreResponse>>>,
         preset: String,
     ) -> Result<CompletedSnippet> {
         let response = response_future.await.map_err(|e| anyhow!(e))?;
         match response {
-            CoreResponse::Generation(response) => Ok(CompletedSnippet {
-                preset,
-                snippet: response.response,
-            }),
-            _ => bail!("unexpected response from llmvm"),
+            ServiceResponse::Single(response) => match response {
+                CoreResponse::Generation(response) => Ok(CompletedSnippet {
+                    preset,
+                    snippet: response.response,
+                }),
+                _ => bail!("unexpected response from llmvm"),
+            },
+            _ => bail!("unexpected service response type from llmvm"),
         }
     }
 
