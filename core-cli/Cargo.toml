@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.1", features = ["derive"] }
+futures = "0.3"
 llmvm-core = { path = "../core" }
 llmvm-protocol = { path = "../protocol", features = ["stdio"] }
 llmvm-util = { path = "../util", features = ["config", "logging"] }

@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+async-stream = "0.3"
+futures = "0.3"
 handlebars = "4.3"
 llmvm-util = { path = "../util" }
 llmvm-protocol = { path = "../protocol", features = ["stdio", "http-client"] }

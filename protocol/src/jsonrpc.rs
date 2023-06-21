@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ProtocolError, ProtocolErrorType};
+use crate::{ProtocolError, ProtocolErrorType, SerializableProtocolError};
 
 pub const ID_KEY: &str = "id";
 pub const METHOD_KEY: &str = "method";
@@ -109,6 +109,18 @@ impl JsonRpcRequest {
             id: Value::Null,
         }
     }
+
+    pub fn parse_params<R: DeserializeOwned>(self) -> Result<R, SerializableProtocolError> {
+        let params = self.params.ok_or_else(|| SerializableProtocolError {
+            error_type: ProtocolErrorType::BadRequest,
+            description: "missing parameters".to_string(),
+        })?;
+
+        serde_json::from_value::<R>(params).map_err(|error| SerializableProtocolError {
+            error_type: ProtocolErrorType::BadRequest,
+            description: error.to_string(),
+        })
+    }
 }
 
 fn get_result_and_error(
@@ -137,6 +149,17 @@ impl JsonRpcResponse {
             id: id.into(),
         }
     }
+
+    pub fn get_result(self) -> Result<Value, SerializableProtocolError> {
+        if let Some(error) = self.error {
+            let jsonrpc_error_type = JsonRpcErrorCode::from(error.code);
+            return Err(SerializableProtocolError {
+                error_type: jsonrpc_error_type.into(),
+                description: error.message,
+            });
+        }
+        Ok(self.result.unwrap_or(Value::Null))
+    }
 }
 
 impl JsonRpcNotification {
@@ -148,12 +171,30 @@ impl JsonRpcNotification {
         }
     }
 
-    pub fn new_with_result_params(method: String, result: Result<Value, ProtocolError>) -> Self {
+    pub fn new_with_result_params(result: Result<Value, ProtocolError>, method: String) -> Self {
         JsonRpcNotification {
             jsonrpc_version: JSON_RPC_VERSION.to_string(),
             method,
             params: serde_json::to_value(JsonRpcNotificationResultParams::new(result)).ok(),
         }
+    }
+
+    pub fn get_result(self) -> Result<Value, SerializableProtocolError> {
+        let params: JsonRpcNotificationResultParams = serde_json::from_value(
+            self.params.unwrap_or(Value::Null),
+        )
+        .unwrap_or(JsonRpcNotificationResultParams {
+            result: Some(Value::Null),
+            error: None,
+        });
+        if let Some(error) = params.error {
+            let jsonrpc_error_type = JsonRpcErrorCode::from(error.code);
+            return Err(SerializableProtocolError {
+                error_type: jsonrpc_error_type.into(),
+                description: error.message,
+            });
+        }
+        Ok(params.result.unwrap_or(Value::Null))
     }
 }
 

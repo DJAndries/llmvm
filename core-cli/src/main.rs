@@ -1,6 +1,8 @@
+use std::pin::Pin;
 use std::{process::exit, sync::Arc};
 
 use clap::{arg, command, Args, Parser, Subcommand};
+use futures::stream::StreamExt;
 use llmvm_core::{LLMVMCore, LLMVMCoreConfig};
 use llmvm_protocol::http::HttpServer;
 use llmvm_protocol::services::CoreService;
@@ -54,6 +56,9 @@ pub struct GenerateArgs {
 
     #[arg(long)]
     max_tokens: u64,
+
+    #[arg(long)]
+    stream: bool,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -102,17 +107,43 @@ async fn main() -> std::io::Result<()> {
                 existing_thread_id: args.existing_thread_id,
                 save_thread: args.save_thread,
             };
-            match core.generate(request).await {
-                Err(e) => {
-                    eprintln!("failed to generate: {}", e);
-                    exit(1);
-                }
-                Ok(response) => {
-                    println!("{}", response.response);
-                    if let Some(id) = response.thread_id {
-                        eprintln!("Thread ID is {}", id);
+            match args.stream {
+                false => match core.generate(request).await {
+                    Err(e) => {
+                        eprintln!("failed to generate: {}", e);
+                        exit(1);
                     }
-                }
+                    Ok(response) => {
+                        println!("{}", response.response);
+                        if let Some(id) = response.thread_id {
+                            eprintln!("Thread ID is {}", id);
+                        }
+                    }
+                },
+                true => match core.generate_stream(request).await {
+                    Err(e) => {
+                        eprintln!("failed to generate: {}", e);
+                        exit(1);
+                    }
+                    Ok(mut stream) => {
+                        while let Some(result) = stream.next().await {
+                            match result {
+                                Err(e) => {
+                                    println!();
+                                    eprintln!("error during generation: {}", e);
+                                    exit(1);
+                                }
+                                Ok(response) => {
+                                    print!("{}", response.response);
+                                    if let Some(id) = response.thread_id {
+                                        eprintln!("\nThread ID is {}", id);
+                                    }
+                                }
+                            }
+                        }
+                        println!();
+                    }
+                },
             }
         }
         CoreCommand::StdioServer => {

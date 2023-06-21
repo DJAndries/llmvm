@@ -1,5 +1,6 @@
 #[cfg(feature = "tower")]
 pub mod services;
+use futures::Stream;
 #[cfg(feature = "tower")]
 pub use tower;
 
@@ -11,6 +12,8 @@ pub mod stdio;
 #[cfg(any(feature = "http-client", feature = "http-server"))]
 pub mod http;
 
+pub mod util;
+
 pub use async_trait::async_trait;
 
 use serde::{Deserialize, Serialize};
@@ -19,11 +22,15 @@ use std::{
     collections::HashSet,
     error::Error,
     fmt::{Display, Formatter},
+    pin::Pin,
     str::FromStr,
 };
 
 pub const COMMAND_TIMEOUT_SECS: u64 = 900;
 pub const CHAT_MODEL_PROVIDER_SUFFIX: &str = "-chat";
+
+pub type NotificationStream<Response> =
+    Pin<Box<dyn Stream<Item = Result<Response, ProtocolError>> + Send>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProtocolErrorType {
@@ -76,6 +83,15 @@ impl From<ProtocolError> for SerializableProtocolError {
     }
 }
 
+impl From<SerializableProtocolError> for ProtocolError {
+    fn from(value: SerializableProtocolError) -> Self {
+        Self {
+            error_type: value.error_type.clone(),
+            error: Box::new(value),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
@@ -97,8 +113,10 @@ pub trait Backend: Send + Sync {
         request: BackendGenerationRequest,
     ) -> Result<BackendGenerationResponse, ProtocolError>;
 
-    // NOTE: do not eliminate this trait and replace with tower service.
-    //       keep it so that other methods can be added.
+    async fn generate_stream(
+        &self,
+        request: BackendGenerationRequest,
+    ) -> Result<NotificationStream<BackendGenerationResponse>, ProtocolError>;
 }
 
 #[async_trait]
@@ -107,6 +125,11 @@ pub trait Core: Send + Sync {
         &self,
         request: GenerationRequest,
     ) -> Result<GenerationResponse, ProtocolError>;
+
+    async fn generate_stream(
+        &self,
+        request: GenerationRequest,
+    ) -> Result<NotificationStream<GenerationResponse>, ProtocolError>;
 
     fn init_project(&self) -> Result<(), ProtocolError>;
 }

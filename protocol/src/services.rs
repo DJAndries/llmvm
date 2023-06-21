@@ -7,14 +7,12 @@ use std::{
     time::Duration,
 };
 
-use futures::stream::Stream;
-use serde::{de::DeserializeOwned, Serialize};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use futures::stream::StreamExt;
 use tower::{timeout::Timeout, Service};
 
 use crate::{
     stdio::{BackendRequest, BackendResponse, CoreRequest, CoreResponse},
-    Backend, Core, COMMAND_TIMEOUT_SECS,
+    Backend, Core, NotificationStream, COMMAND_TIMEOUT_SECS,
 };
 
 pub struct BackendService<B>
@@ -73,11 +71,9 @@ where
 
 pub enum ServiceResponse<Response> {
     Single(Response),
-    Multiple(ServiceNotificationStream<Response>),
+    Multiple(NotificationStream<Response>),
 }
 
-pub type ServiceNotificationStream<Response> =
-    Box<dyn Stream<Item = Result<Response, ServiceError>> + Send>;
 pub type ServiceError = Box<dyn Error + Send + Sync + 'static>;
 pub type ServiceFuture<Response> =
     Pin<Box<dyn Future<Output = Result<Response, ServiceError>> + Send>>;
@@ -111,6 +107,7 @@ where
                     .generate(req)
                     .await
                     .map(|v| ServiceResponse::Single(BackendResponse::Generation(v))),
+                BackendRequest::GenerationStream(req) => todo!(),
             }?)
         })
     }
@@ -136,6 +133,12 @@ where
                     .generate(req)
                     .await
                     .map(|v| ServiceResponse::Single(CoreResponse::Generation(v))),
+                CoreRequest::GenerationStream(req) => core.generate_stream(req).await.map(|s| {
+                    ServiceResponse::Multiple(
+                        s.map(|resp| resp.map(|resp| CoreResponse::GenerationStream(resp)))
+                            .boxed(),
+                    )
+                }),
                 CoreRequest::InitProject => core
                     .init_project()
                     .map(|_| ServiceResponse::Single(CoreResponse::InitProject)),
@@ -156,7 +159,6 @@ pub mod util {
 
     use crate::{
         http::{HttpClient, RequestHttpConvert, ResponseHttpConvert},
-        jsonrpc::JsonRpcRequest,
         stdio::{RequestJsonRpcConvert, ResponseJsonRpcConvert, StdioClient},
         HttpClientConfig,
     };
@@ -172,8 +174,12 @@ pub mod util {
         http_client_config: Option<HttpClientConfig>,
     ) -> Result<BoxedService<Request, Response>, ServiceError>
     where
-        Request:
-            RequestHttpConvert<Request> + RequestJsonRpcConvert<Request> + Send + Sync + 'static,
+        Request: RequestHttpConvert<Request>
+            + RequestJsonRpcConvert<Request>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: ResponseHttpConvert<Request, Response>
             + ResponseJsonRpcConvert<Request, Response>
             + Send

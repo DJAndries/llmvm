@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap},
-    pin::Pin,
-};
+use std::{collections::HashMap, pin::Pin};
 
 use anyhow::Result;
 use llmvm_protocol::{
@@ -18,10 +15,7 @@ use lsp_types::{
 
 use serde_json::Value;
 use tokio::{
-    io::{
-        AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Stdin,
-        Stdout,
-    },
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Stdin, Stdout},
     process::{ChildStdin, ChildStdout},
     sync::{
         mpsc::{self},

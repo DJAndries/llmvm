@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+futures = "0.3"
 llm = { git = "https://github.com/rustformers/llm", rev = "d9f59b5b3c2d1c6d663686cee49090704ef41149" }
 llmvm-protocol = { path = "../../protocol", features = ["stdio"] }
 llmvm-util = { path = "../../util" }
@@ -12,4 +13,5 @@ rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.27", features = ["sync"] }
+tokio-stream = "0.1"
 tracing = "0.1"

@@ -34,73 +34,42 @@ use crate::{
     jsonrpc::{
         JsonRpcErrorCode, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
     },
-    services::{ServiceError, ServiceFuture, ServiceNotificationStream, ServiceResponse},
+    services::{ServiceError, ServiceFuture, ServiceResponse},
+    util::parse_from_value,
     BackendGenerationRequest, BackendGenerationResponse, GenerationRequest, GenerationResponse,
-    ProtocolError, ProtocolErrorType, SerializableProtocolError, COMMAND_TIMEOUT_SECS,
+    NotificationStream, ProtocolError, ProtocolErrorType, SerializableProtocolError,
+    COMMAND_TIMEOUT_SECS,
 };
 
 const GENERATION_METHOD: &str = "generation";
+const GENERATION_STREAM_METHOD: &str = "generation_stream";
 const INIT_PROJECT_METHOD: &str = "init_project";
 
 // TODO: move these to lib/services
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum BackendRequest {
     Generation(BackendGenerationRequest),
+    GenerationStream(BackendGenerationRequest),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum BackendResponse {
     Generation(BackendGenerationResponse),
+    GenerationStream(BackendGenerationResponse),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum CoreRequest {
     Generation(GenerationRequest),
+    GenerationStream(GenerationRequest),
     InitProject,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum CoreResponse {
     Generation(GenerationResponse),
+    GenerationStream(GenerationResponse),
     InitProject,
-}
-
-// TODO: move to jsonrpc and make it a method of JsonRpcRequest
-fn parse_request_from_jsonrpc_request<R: DeserializeOwned>(
-    value: JsonRpcRequest,
-) -> Result<R, SerializableProtocolError> {
-    let params = value.params.ok_or_else(|| SerializableProtocolError {
-        error_type: ProtocolErrorType::BadRequest,
-        description: "missing parameters".to_string(),
-    })?;
-
-    serde_json::from_value::<R>(params).map_err(|error| SerializableProtocolError {
-        error_type: ProtocolErrorType::BadRequest,
-        description: error.to_string(),
-    })
-}
-
-fn get_result_from_jsonrpc_response(
-    value: JsonRpcResponse,
-) -> Result<Value, SerializableProtocolError> {
-    if let Some(error) = value.error {
-        let jsonrpc_error_type = JsonRpcErrorCode::from(error.code);
-        return Err(SerializableProtocolError {
-            error_type: jsonrpc_error_type.into(),
-            description: error.message,
-        });
-    }
-    value.result.ok_or(SerializableProtocolError {
-        error_type: ProtocolErrorType::BadRequest,
-        description: "result not found in response".to_string(),
-    })
-}
-
-fn parse_from_value<R: DeserializeOwned>(value: Value) -> Result<R, SerializableProtocolError> {
-    serde_json::from_value::<R>(value).map_err(|error| SerializableProtocolError {
-        error_type: ProtocolErrorType::BadRequest,
-        description: error.to_string(),
-    })
 }
 
 pub trait RequestJsonRpcConvert<Request> {
@@ -125,9 +94,8 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
         value: JsonRpcRequest,
     ) -> Result<Option<Self>, SerializableProtocolError> {
         Ok(Some(match value.method.as_str() {
-            GENERATION_METHOD => {
-                CoreRequest::Generation(parse_request_from_jsonrpc_request(value)?)
-            }
+            GENERATION_METHOD => CoreRequest::Generation(value.parse_params()?),
+            GENERATION_STREAM_METHOD => CoreRequest::GenerationStream(value.parse_params()?),
             INIT_PROJECT_METHOD => CoreRequest::InitProject,
             _ => return Ok(None),
         }))
@@ -137,6 +105,10 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
         let (method, params) = match self {
             CoreRequest::Generation(request) => (
                 GENERATION_METHOD,
+                Some(serde_json::to_value(request).unwrap()),
+            ),
+            CoreRequest::GenerationStream(request) => (
+                GENERATION_STREAM_METHOD,
                 Some(serde_json::to_value(request).unwrap()),
             ),
             CoreRequest::InitProject => (INIT_PROJECT_METHOD, None),
@@ -152,10 +124,17 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
     ) -> Result<Option<Self>, SerializableProtocolError> {
         match value {
             JsonRpcMessage::Response(resp) => {
-                let result = get_result_from_jsonrpc_response(resp)?;
+                let result = resp.get_result()?;
                 Ok(Some(match original_request {
                     CoreRequest::Generation(_) => Self::Generation(parse_from_value(result)?),
                     CoreRequest::InitProject => Self::InitProject,
+                    _ => return Ok(None),
+                }))
+            }
+            JsonRpcMessage::Notification(resp) => {
+                let result = resp.get_result()?;
+                Ok(Some(match original_request {
+                    CoreRequest::GenerationStream(_) => Self::Generation(parse_from_value(result)?),
                     _ => return Ok(None),
                 }))
             }
@@ -167,11 +146,19 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
         result: Result<CoreResponse, ProtocolError>,
         id: Value,
     ) -> JsonRpcMessage {
+        let mut is_notification = false;
         let result = result.map(|response| match response {
             CoreResponse::Generation(response) => serde_json::to_value(response).unwrap(),
+            CoreResponse::GenerationStream(response) => {
+                is_notification = true;
+                serde_json::to_value(response).unwrap()
+            }
             CoreResponse::InitProject => Value::Null,
         });
-        JsonRpcResponse::new(result, id).into()
+        match is_notification {
+            true => JsonRpcNotification::new_with_result_params(result, id.to_string()).into(),
+            false => JsonRpcResponse::new(result, id).into(),
+        }
     }
 }
 
@@ -180,9 +167,8 @@ impl RequestJsonRpcConvert<BackendRequest> for BackendRequest {
         value: JsonRpcRequest,
     ) -> Result<Option<Self>, SerializableProtocolError> {
         Ok(Some(match value.method.as_str() {
-            GENERATION_METHOD => {
-                BackendRequest::Generation(parse_request_from_jsonrpc_request(value)?)
-            }
+            GENERATION_METHOD => BackendRequest::Generation(value.parse_params()?),
+            GENERATION_STREAM_METHOD => BackendRequest::GenerationStream(value.parse_params()?),
             _ => return Ok(None),
         }))
     }
@@ -192,6 +178,10 @@ impl RequestJsonRpcConvert<BackendRequest> for BackendRequest {
             BackendRequest::Generation(generation_response) => (
                 GENERATION_METHOD,
                 Some(serde_json::to_value(generation_response).unwrap()),
+            ),
+            BackendRequest::GenerationStream(request) => (
+                GENERATION_STREAM_METHOD,
+                Some(serde_json::to_value(request).unwrap()),
             ),
         };
         JsonRpcRequest::new(method.to_string(), params)
@@ -205,9 +195,19 @@ impl ResponseJsonRpcConvert<BackendRequest, BackendResponse> for BackendResponse
     ) -> Result<Option<Self>, SerializableProtocolError> {
         Ok(Some(match value {
             JsonRpcMessage::Response(resp) => {
-                let result = get_result_from_jsonrpc_response(resp)?;
+                let result = resp.get_result()?;
                 match original_request {
                     BackendRequest::Generation(_) => Self::Generation(parse_from_value(result)?),
+                    _ => return Ok(None),
+                }
+            }
+            JsonRpcMessage::Notification(resp) => {
+                let result = resp.get_result()?;
+                match original_request {
+                    BackendRequest::GenerationStream(_) => {
+                        Self::Generation(parse_from_value(result)?)
+                    }
+                    _ => return Ok(None),
                 }
             }
             _ => return Ok(None),
@@ -218,12 +218,20 @@ impl ResponseJsonRpcConvert<BackendRequest, BackendResponse> for BackendResponse
         result: Result<BackendResponse, ProtocolError>,
         id: Value,
     ) -> JsonRpcMessage {
+        let mut is_notification = false;
         let result = result
             .map(|response| match response {
                 BackendResponse::Generation(response) => serde_json::to_value(response).unwrap(),
+                BackendResponse::GenerationStream(response) => {
+                    is_notification = true;
+                    serde_json::to_value(response).unwrap()
+                }
             })
             .map_err(|e| e.into());
-        JsonRpcResponse::new(result, id).into()
+        match is_notification {
+            true => JsonRpcNotification::new_with_result_params(result, id.to_string()).into(),
+            false => JsonRpcResponse::new(result, id).into(),
+        }
     }
 }
 
@@ -235,12 +243,12 @@ fn serialize_payload<R: Serialize>(payload: &R) -> String {
 
 struct IdentifiedNotification<Response> {
     id: u64,
-    result: Option<Result<Response, ServiceError>>,
+    result: Option<Result<Response, ProtocolError>>,
 }
 
 struct ServerNotificationLink<Response> {
     id: u64,
-    stream: Pin<ServiceNotificationStream<Response>>,
+    stream: NotificationStream<Response>,
 }
 
 impl<Response> Stream for ServerNotificationLink<Response> {
@@ -363,13 +371,10 @@ where
                         .await;
                     }
                     ServiceResponse::Multiple(stream) => {
-                        notification_streams.lock().await.insert(
-                            id,
-                            ServerNotificationLink {
-                                id,
-                                stream: Pin::from(stream),
-                            },
-                        );
+                        notification_streams
+                            .lock()
+                            .await
+                            .insert(id, ServerNotificationLink { id, stream });
                     }
                 },
                 Err(e) => {
@@ -430,7 +435,7 @@ where
 
 struct ClientNotificationLink<Request, Response> {
     request: Request,
-    notification_tx: UnboundedSender<Result<Response, ServiceError>>,
+    notification_tx: UnboundedSender<Result<Response, ProtocolError>>,
 }
 
 pub struct StdioClient<Request, Response>
@@ -563,7 +568,7 @@ where
                                         let id = notification.method.parse::<u64>().unwrap_or_default();
                                         if let Some(trx) = pending_reqs.remove(&id) {
                                             let (notification_tx, notification_rx) = mpsc::unbounded_channel();
-                                            trx.response_tx.send(Ok(ServiceResponse::Multiple(Box::new(UnboundedReceiverStream::new(notification_rx))))).ok();
+                                            trx.response_tx.send(Ok(ServiceResponse::Multiple(UnboundedReceiverStream::new(notification_rx).boxed()))).ok();
                                             notification_links.insert(id, ClientNotificationLink {
                                                 request: trx.request,
                                                 notification_tx

@@ -892,6 +892,8 @@ dependencies = [
 name = "llmvm-core"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
+ "futures",
  "handlebars",
  "llmvm-protocol",
  "llmvm-util",
@@ -910,6 +912,7 @@ name = "llmvm-core-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "futures",
  "llmvm-core",
  "llmvm-protocol",
  "llmvm-util",
@@ -922,6 +925,7 @@ dependencies = [
 name = "llmvm-llmrs"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "llm",
  "llmvm-protocol",
  "llmvm-util",
@@ -930,6 +934,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tracing",
 ]
 

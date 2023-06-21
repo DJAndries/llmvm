@@ -1,18 +1,18 @@
-mod task;
+mod model;
 
-use std::{collections::HashMap, str::FromStr, thread::JoinHandle};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
+use futures::StreamExt;
 use llm::{InferenceSessionConfig, LoadError, UnsupportedModelArchitecture};
 use llmvm_protocol::{
     async_trait, Backend, BackendGenerationRequest, BackendGenerationResponse, ModelDescription,
-    ProtocolError, ProtocolErrorType,
+    NotificationStream, ProtocolError, ProtocolErrorType,
 };
 
+use model::LlmrsModel;
 use serde::Deserialize;
-use std::thread;
-use task::{send_request_to_task, LlmrsRequest, LlmrsTask};
 use thiserror::Error;
-use tokio::sync::{mpsc::UnboundedSender, RwLock};
+use tokio::{sync::RwLock, task::JoinHandle};
 use tracing::error;
 
 pub type Result<T> = std::result::Result<T, LlmrsError>;
@@ -35,6 +35,8 @@ pub enum LlmrsError {
     Inference(String),
     #[error("unable to load app data, could not find user home folder")]
     UserHomeNotFound,
+    #[error("model not ready")]
+    ModelNotReady,
 }
 
 impl Into<ProtocolError> for LlmrsError {
@@ -48,6 +50,7 @@ impl Into<ProtocolError> for LlmrsError {
             LlmrsError::InferenceParametersDeserialize(_) => ProtocolErrorType::BadRequest,
             LlmrsError::Inference(_) => ProtocolErrorType::Internal,
             LlmrsError::UserHomeNotFound => ProtocolErrorType::Internal,
+            LlmrsError::ModelNotReady => ProtocolErrorType::BadRequest,
         };
         ProtocolError {
             error_type,
@@ -73,39 +76,62 @@ pub struct LlmrsConfig {
 pub struct LlmrsBackend {
     config: LlmrsConfig,
 
-    threads: RwLock<Vec<JoinHandle<()>>>,
-    request_senders: RwLock<HashMap<String, UnboundedSender<LlmrsRequest>>>,
+    task_handles: RwLock<Vec<JoinHandle<()>>>,
+    models: Arc<RwLock<HashMap<String, Option<LlmrsModel>>>>,
 }
 
 impl LlmrsBackend {
     pub fn new(config: LlmrsConfig) -> Self {
         Self {
             config,
-            threads: Default::default(),
-            request_senders: Default::default(),
+            task_handles: Default::default(),
+            models: Default::default(),
         }
+    }
+
+    async fn store_task_handle(&self, handle: JoinHandle<()>) {
+        let mut task_handles = self.task_handles.write().await;
+        task_handles.retain(|h| !h.is_finished());
+        task_handles.push(handle);
+    }
+
+    async fn get_model<'a>(
+        models: &'a HashMap<String, Option<LlmrsModel>>,
+        request: &BackendGenerationRequest,
+    ) -> Result<&'a LlmrsModel> {
+        let model_description = ModelDescription::from_str(&request.model)
+            .map_err(|_| LlmrsError::ModelDescriptionParse)?;
+        Ok(models
+            .get(&model_description.model_name)
+            .ok_or(LlmrsError::WeightsNotFound)?
+            .as_ref()
+            .ok_or(LlmrsError::ModelNotReady)?)
     }
 
     pub async fn load(&self) {
         for weights_config in &self.config.weights {
             let name = weights_config.name.clone();
-            let mut task = LlmrsTask::new(weights_config.clone());
-            self.request_senders
-                .write()
-                .await
-                .insert(name, task.get_sender());
-            self.threads.write().await.push(thread::spawn(move || {
-                if let Err(e) = task.run() {
-                    error!("model task failed: {}", e);
+            self.models.write().await.insert(name, None);
+            let models = self.models.clone();
+            let weights_config = weights_config.clone();
+            let task_handle = tokio::spawn(async move {
+                let name = weights_config.name.clone();
+                match LlmrsModel::load(weights_config).await {
+                    Err(e) => {
+                        error!("model load failed: {}", e);
+                    }
+                    Ok(model) => {
+                        models.write().await.insert(name, Some(model));
+                    }
                 }
-            }));
+            });
+            self.store_task_handle(task_handle).await;
         }
     }
 
     pub async fn close(&self) {
-        self.request_senders.write().await.clear();
-        for thread in self.threads.write().await.drain(..) {
-            thread.join().expect("thread should exit gracefully");
+        for handle in self.task_handles.write().await.drain(..) {
+            handle.await.expect("task should exit gracefully");
         }
     }
 }
@@ -117,15 +143,30 @@ impl Backend for LlmrsBackend {
         request: BackendGenerationRequest,
     ) -> std::result::Result<BackendGenerationResponse, ProtocolError> {
         async {
-            let model_description = ModelDescription::from_str(&request.model)
-                .map_err(|_| LlmrsError::ModelDescriptionParse)?;
+            let models = self.models.read().await;
+            let model = Self::get_model(&models, &request).await?;
+            model.generate(request).await
+        }
+        .await
+        .map_err(|e: LlmrsError| e.into())
+    }
 
-            let request_senders = self.request_senders.read().await;
-            let request_sender = request_senders
-                .get(&model_description.model_name)
-                .ok_or(LlmrsError::WeightsNotFound)?;
-
-            Ok(send_request_to_task(request_sender, request).await?)
+    async fn generate_stream(
+        &self,
+        request: BackendGenerationRequest,
+    ) -> std::result::Result<NotificationStream<BackendGenerationResponse>, ProtocolError> {
+        async {
+            let models = self.models.read().await;
+            let model = Self::get_model(&models, &request).await?;
+            let (handle, stream) = model.generate_stream(request).await;
+            self.store_task_handle(handle).await;
+            Ok(stream
+                .map(|result| {
+                    result
+                        .map(|response| BackendGenerationResponse { response })
+                        .map_err(|e| e.into())
+                })
+                .boxed())
         }
         .await
         .map_err(|e: LlmrsError| e.into())

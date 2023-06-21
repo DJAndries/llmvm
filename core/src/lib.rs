@@ -1,5 +1,7 @@
 mod util;
 
+use async_stream::stream;
+use futures::stream::{once, StreamExt};
 use handlebars::{
     no_escape, Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext,
     RenderError, Renderable, StringOutput,
@@ -12,7 +14,8 @@ use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, Core, GenerationParameters,
     GenerationRequest, GenerationResponse, HttpClientConfig, HttpServerConfig, Message,
-    MessageRole, ModelDescription, ProtocolError, ProtocolErrorType, SerializableProtocolError,
+    MessageRole, ModelDescription, NotificationStream, ProtocolError, ProtocolErrorType,
+    SerializableProtocolError,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use rand::distributions::Alphanumeric;
@@ -22,6 +25,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use std::fs::create_dir;
+use std::pin::Pin;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -31,7 +35,7 @@ use std::{
 };
 use thiserror::Error;
 use tokio::fs;
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex, MutexGuard};
 use tracing::{debug, info};
 use util::current_timestamp_secs;
 
@@ -299,6 +303,28 @@ async fn save_thread(thread_id: &str, messages: Vec<Message>) -> Result<()> {
     Ok(())
 }
 
+async fn maybe_save_thread_messages_and_get_thread_id(
+    request: &GenerationRequest,
+    new_text: String,
+    messages: Option<Vec<Message>>,
+) -> Result<Option<String>> {
+    Ok(match messages {
+        Some(mut messages) => {
+            messages.push(Message {
+                role: MessageRole::Assistant,
+                content: new_text,
+            });
+            let thread_id = request
+                .existing_thread_id
+                .clone()
+                .unwrap_or_else(new_thread_id);
+            save_thread(&thread_id, messages).await?;
+            Some(thread_id)
+        }
+        None => None,
+    })
+}
+
 pub async fn get_thread_messages(thread_id: &str) -> Result<Vec<Message>> {
     let thread_path = thread_path(thread_id)?;
     Ok(
@@ -346,34 +372,43 @@ impl LLMVMCore {
         })
     }
 
+    async fn get_client<'a>(
+        &self,
+        clients_guard: &'a mut HashMap<
+            String,
+            Timeout<BoxedService<BackendRequest, BackendResponse>>,
+        >,
+        model_description: &ModelDescription,
+    ) -> Result<&'a mut Timeout<BoxedService<BackendRequest, BackendResponse>>> {
+        let command = format!(
+            "{}{}{}",
+            BACKEND_COMMAND_PREFIX, model_description.backend, BACKEND_COMMAND_SUFFIX
+        );
+        if !clients_guard.contains_key(&model_description.backend) {
+            let bin_path = self.config.bin_path.as_ref().map(|v| v.as_str());
+            debug!("starting backend {command} in {bin_path:?}");
+            let backend = model_description.backend.as_str();
+            clients_guard.insert(
+                backend.to_string(),
+                service_with_timeout(Box::new(
+                    StdioClient::new(bin_path, &command, &["--log-to-file"])
+                        .await
+                        .map_err(|e| CoreError::StdioBackendStart(e))?,
+                )),
+            );
+        }
+        Ok(clients_guard.get_mut(&model_description.backend).unwrap())
+    }
+
     async fn send_generate_request(
         &self,
         request: BackendGenerationRequest,
         model_description: &ModelDescription,
     ) -> Result<BackendGenerationResponse> {
-        let command = format!(
-            "{}{}{}",
-            BACKEND_COMMAND_PREFIX, model_description.backend, BACKEND_COMMAND_SUFFIX
-        );
         let mut clients_guard = self.clients.lock().await;
-        let client = match clients_guard.get_mut(&model_description.backend) {
-            None => {
-                let bin_path = self.config.bin_path.as_ref().map(|v| v.as_str());
-                debug!("starting backend {command} in {bin_path:?}");
-                let backend = model_description.backend.as_str();
-                clients_guard.insert(
-                    backend.to_string(),
-                    service_with_timeout(Box::new(
-                        StdioClient::new(bin_path, &command, &["--log-to-file"])
-                            .await
-                            .map_err(|e| CoreError::StdioBackendStart(e))?,
-                    )),
-                );
-                clients_guard.get_mut(backend).unwrap()
-            }
-            Some(client) => client,
-        };
-
+        let client = self
+            .get_client(&mut clients_guard, model_description)
+            .await?;
         let resp_future = client.call(BackendRequest::Generation(request));
         drop(clients_guard);
         let resp = resp_future
@@ -382,9 +417,127 @@ impl LLMVMCore {
         match resp {
             ServiceResponse::Single(response) => match response {
                 BackendResponse::Generation(response) => Ok(response),
+                _ => Err(CoreError::UnexpectedServiceResponse),
             },
             _ => Err(CoreError::UnexpectedServiceResponse),
         }
+    }
+    async fn send_generate_request_for_stream(
+        &self,
+        request: BackendGenerationRequest,
+        model_description: &ModelDescription,
+    ) -> Result<NotificationStream<BackendResponse>> {
+        let mut clients_guard = self.clients.lock().await;
+        let client = self
+            .get_client(&mut clients_guard, model_description)
+            .await?;
+        let resp_future = client.call(BackendRequest::GenerationStream(request));
+        drop(clients_guard);
+        let resp = resp_future
+            .await
+            .map_err(|e| CoreError::Protocol(e.into()))?;
+        match resp {
+            ServiceResponse::Multiple(stream) => Ok(stream),
+            _ => Err(CoreError::UnexpectedServiceResponse),
+        }
+    }
+
+    async fn prepare_for_generate(
+        &self,
+        request: &GenerationRequest,
+    ) -> Result<(
+        BackendGenerationRequest,
+        ModelDescription,
+        Option<Vec<Message>>,
+    )> {
+        let parameters = match &request.preset_id {
+            Some(preset_id) => {
+                let mut parameters = load_preset(&preset_id).await?;
+                if let Some(request_parameters) = request.parameters.clone() {
+                    parameters = merge_generation_parameters(parameters, request_parameters);
+                }
+                parameters
+            }
+            None => request
+                .parameters
+                .clone()
+                .ok_or(CoreError::MissingParameters)?,
+        };
+        debug!("generation parameters: {:?}", parameters);
+
+        let model = parameters
+            .model
+            .ok_or(CoreError::MissingParameter("model"))?;
+        let model_description =
+            ModelDescription::from_str(&model).map_err(|_| CoreError::ModelDescriptionParse)?;
+
+        let is_chat_model = model_description.is_chat_model();
+        let prompt_parameters = parameters
+            .prompt_parameters
+            .unwrap_or(Value::Object(Default::default()));
+
+        let prompt = match parameters.custom_prompt_template {
+            Some(template) => {
+                ReadyPrompt::from_custom_template(&template, &prompt_parameters, is_chat_model)
+                    .await?
+            }
+            None => match parameters.prompt_template_id {
+                Some(template_id) => {
+                    ReadyPrompt::from_stored_template(
+                        &template_id,
+                        &prompt_parameters,
+                        is_chat_model,
+                    )
+                    .await?
+                }
+                None => return Err(CoreError::TemplateNotFound),
+            },
+        };
+
+        let mut thread_messages = match request.existing_thread_id.as_ref() {
+            Some(thread_id) => Some(get_thread_messages(thread_id).await?),
+            None => None,
+        };
+        if let Some(content) = prompt.system_prompt {
+            thread_messages
+                .get_or_insert_with(|| Vec::with_capacity(1))
+                .push(Message {
+                    role: MessageRole::System,
+                    content,
+                });
+        }
+
+        let thread_messages_to_save = match request.save_thread {
+            true => {
+                let mut clone = thread_messages.clone().unwrap_or_default();
+                clone.push(Message {
+                    role: MessageRole::User,
+                    content: prompt.main_prompt.clone(),
+                });
+                Some(clone)
+            }
+            false => None,
+        };
+
+        let backend_request = BackendGenerationRequest {
+            model,
+            prompt: prompt.main_prompt,
+            max_tokens: parameters
+                .max_tokens
+                .ok_or(CoreError::MissingParameter("max_tokens"))?,
+            thread_messages,
+            model_parameters: parameters.model_parameters,
+        };
+
+        info!(
+            "Sending backend request with prompt: {}",
+            backend_request.prompt
+        );
+        debug!(
+            "Thread messages for requests: {:#?}",
+            backend_request.thread_messages
+        );
+        Ok((backend_request, model_description, thread_messages_to_save))
     }
 
     pub async fn close_client(&self, model: &str) {
@@ -432,107 +585,21 @@ impl Core for LLMVMCore {
         request: GenerationRequest,
     ) -> std::result::Result<GenerationResponse, ProtocolError> {
         async {
-            let parameters = match request.preset_id {
-                Some(preset_id) => {
-                    let mut parameters = load_preset(&preset_id).await?;
-                    if let Some(request_parameters) = request.parameters {
-                        parameters = merge_generation_parameters(parameters, request_parameters);
-                    }
-                    parameters
-                }
-                None => request.parameters.ok_or(CoreError::MissingParameters)?,
-            };
-            debug!("generation parameters: {:?}", parameters);
+            let (backend_request, model_description, thread_messages_to_save) =
+                self.prepare_for_generate(&request).await?;
 
-            let model = parameters
-                .model
-                .ok_or(CoreError::MissingParameter("model"))?;
-            let model_description =
-                ModelDescription::from_str(&model).map_err(|_| CoreError::ModelDescriptionParse)?;
-
-            let is_chat_model = model_description.is_chat_model();
-            let prompt_parameters = parameters
-                .prompt_parameters
-                .unwrap_or(Value::Object(Default::default()));
-
-            let prompt = match parameters.custom_prompt_template {
-                Some(template) => {
-                    ReadyPrompt::from_custom_template(&template, &prompt_parameters, is_chat_model)
-                        .await?
-                }
-                None => match parameters.prompt_template_id {
-                    Some(template_id) => {
-                        ReadyPrompt::from_stored_template(
-                            &template_id,
-                            &prompt_parameters,
-                            is_chat_model,
-                        )
-                        .await?
-                    }
-                    None => return Err(CoreError::TemplateNotFound),
-                },
-            };
-
-            let mut thread_messages = match request.existing_thread_id.as_ref() {
-                Some(thread_id) => Some(get_thread_messages(thread_id).await?),
-                None => None,
-            };
-            if let Some(content) = prompt.system_prompt {
-                thread_messages
-                    .get_or_insert_with(|| Vec::with_capacity(1))
-                    .push(Message {
-                        role: MessageRole::System,
-                        content,
-                    });
-            }
-
-            let thread_messages_to_save = match request.save_thread {
-                true => {
-                    let mut clone = thread_messages.clone().unwrap_or_default();
-                    clone.push(Message {
-                        role: MessageRole::User,
-                        content: prompt.main_prompt.clone(),
-                    });
-                    Some(clone)
-                }
-                false => None,
-            };
-
-            let backend_request = BackendGenerationRequest {
-                model,
-                prompt: prompt.main_prompt,
-                max_tokens: parameters
-                    .max_tokens
-                    .ok_or(CoreError::MissingParameter("max_tokens"))?,
-                thread_messages,
-                model_parameters: parameters.model_parameters,
-            };
-
-            info!(
-                "Sending backend request with prompt: {}",
-                backend_request.prompt
-            );
-            debug!(
-                "Thread messages for requests: {:#?}",
-                backend_request.thread_messages
-            );
             let response = self
                 .send_generate_request(backend_request, &model_description)
                 .await?;
 
             debug!("Response: {}", response.response);
 
-            let thread_id = if let Some(mut thread_messages) = thread_messages_to_save {
-                thread_messages.push(Message {
-                    role: MessageRole::Assistant,
-                    content: response.response.clone(),
-                });
-                let thread_id = request.existing_thread_id.unwrap_or_else(new_thread_id);
-                save_thread(&thread_id, thread_messages).await?;
-                Some(thread_id)
-            } else {
-                None
-            };
+            let thread_id = maybe_save_thread_messages_and_get_thread_id(
+                &request,
+                response.response.clone(),
+                thread_messages_to_save,
+            )
+            .await?;
 
             Ok(GenerationResponse {
                 response: response.response,
@@ -540,7 +607,45 @@ impl Core for LLMVMCore {
             })
         }
         .await
-        .map_err(|e| e.into())
+        .map_err(|e: CoreError| e.into())
+    }
+
+    async fn generate_stream(
+        &self,
+        request: GenerationRequest,
+    ) -> std::result::Result<NotificationStream<GenerationResponse>, ProtocolError> {
+        async {
+            let (backend_request, model_description, thread_messages_to_save) =
+                self.prepare_for_generate(&request).await?;
+
+            let mut stream = self
+                .send_generate_request_for_stream(backend_request, &model_description)
+                .await?;
+
+            Ok(stream! {
+                let mut full_response = String::new();
+                while let Some(result) = stream.next().await {
+                    match result {
+                        Ok(response) => match response {
+                            BackendResponse::GenerationStream(response) => {
+                                full_response.push_str(&response.response);
+                                yield Ok(GenerationResponse {
+                                    response: response.response,
+                                    thread_id: None
+                                });
+                            }
+                            _ => yield Err(CoreError::UnexpectedServiceResponse.into())
+                        },
+                        Err(e) => yield Err(e)
+                    }
+                }
+                if let Ok(thread_id) = maybe_save_thread_messages_and_get_thread_id(&request, full_response, thread_messages_to_save).await {
+                    yield Ok(GenerationResponse { response: String::new(), thread_id });
+                }
+            }.boxed())
+        }
+        .await
+        .map_err(|e: CoreError| e.into())
     }
 
     fn init_project(&self) -> std::result::Result<(), ProtocolError> {

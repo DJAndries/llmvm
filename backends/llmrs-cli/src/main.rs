@@ -9,8 +9,8 @@ use llmvm_protocol::HttpServerConfig;
 use llmvm_util::{config::load_config, logging::setup_subscriber};
 use serde::Deserialize;
 
-const CONFIG_FILENAME: &str = "llama.toml";
-const LOG_FILENAME: &str = "llama.log";
+const CONFIG_FILENAME: &str = "llmrs.toml";
+const LOG_FILENAME: &str = "llmrs.log";
 
 #[derive(Parser)]
 #[command(version)]

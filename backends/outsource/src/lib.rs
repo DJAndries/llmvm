@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use llmvm_protocol::{
     async_trait, Backend, BackendGenerationRequest, BackendGenerationResponse, ModelDescription,
-    ProtocolError, ProtocolErrorType,
+    NotificationStream, ProtocolError, ProtocolErrorType,
 };
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -127,5 +127,12 @@ impl Backend for OutsourceBackend {
         }
         .await
         .map_err(|e| e.into())
+    }
+
+    async fn generate_stream(
+        &self,
+        request: BackendGenerationRequest,
+    ) -> std::result::Result<NotificationStream<BackendGenerationResponse>, ProtocolError> {
+        todo!();
     }
 }
