@@ -36,6 +36,8 @@ pub enum OutsourceError {
     ModelDescriptionParse,
     #[error("model parameters should be object")]
     ModelParamsNotObject,
+    #[error("generation streaming not available for this provider")]
+    StreamingNotAvailable,
 }
 
 #[derive(Display, EnumString)]
@@ -61,6 +63,7 @@ impl Into<ProtocolError> for OutsourceError {
             OutsourceError::NoTextInResponse => ProtocolErrorType::Internal,
             OutsourceError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
             OutsourceError::ModelParamsNotObject => ProtocolErrorType::BadRequest,
+            OutsourceError::StreamingNotAvailable => ProtocolErrorType::BadRequest,
         };
         ProtocolError {
             error_type,
@@ -83,6 +86,17 @@ impl OutsourceBackend {
     pub fn new(config: OutsourceConfig) -> Self {
         Self { config }
     }
+
+    fn get_model_description_and_provider(
+        request: &BackendGenerationRequest,
+    ) -> Result<(ModelDescription, Provider)> {
+        let model_description = ModelDescription::from_str(&request.model)
+            .map_err(|_| OutsourceError::ModelDescriptionParse)?;
+        let provider = Provider::try_from(model_description.provider.as_str()).map_err(|_| {
+            OutsourceError::ProviderNotFound(model_description.provider.to_string())
+        })?;
+        Ok((model_description, provider))
+    }
 }
 
 #[async_trait]
@@ -92,22 +106,9 @@ impl Backend for OutsourceBackend {
         request: BackendGenerationRequest,
     ) -> std::result::Result<BackendGenerationResponse, ProtocolError> {
         async {
-            let model_description = ModelDescription::from_str(&request.model)
-                .map_err(|_| OutsourceError::ModelDescriptionParse)?;
-            let provider =
-                Provider::try_from(model_description.provider.as_str()).map_err(|_| {
-                    OutsourceError::ProviderNotFound(model_description.provider.to_string())
-                })?;
+            let (model_description, provider) = Self::get_model_description_and_provider(&request)?;
             match provider {
-                Provider::OpenAIText => {
-                    openai::generate(
-                        request,
-                        model_description,
-                        get_api_key(self.config.openai_api_key.as_ref())?,
-                    )
-                    .await
-                }
-                Provider::OpenAIChat => {
+                Provider::OpenAIText | Provider::OpenAIChat => {
                     openai::generate(
                         request,
                         model_description,
@@ -133,6 +134,21 @@ impl Backend for OutsourceBackend {
         &self,
         request: BackendGenerationRequest,
     ) -> std::result::Result<NotificationStream<BackendGenerationResponse>, ProtocolError> {
-        todo!();
+        async {
+            let (model_description, provider) = Self::get_model_description_and_provider(&request)?;
+            match provider {
+                Provider::OpenAIText | Provider::OpenAIChat => {
+                    openai::generate_stream(
+                        request,
+                        model_description,
+                        get_api_key(self.config.openai_api_key.as_ref())?,
+                    )
+                    .await
+                }
+                _ => return Err(OutsourceError::StreamingNotAvailable),
+            }
+        }
+        .await
+        .map_err(|e| e.into())
     }
 }

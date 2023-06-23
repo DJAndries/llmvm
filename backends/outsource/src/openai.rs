@@ -1,11 +1,14 @@
+use std::collections::VecDeque;
 
-
+use async_stream::stream;
+use futures::StreamExt;
+use llmvm_protocol::services::ServiceError;
 use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, Message, MessageRole, ModelDescription,
+    NotificationStream, ProtocolError,
 };
-use reqwest::{Client, Url};
+use reqwest::{Client, Response as HttpResponse, Url};
 use serde::Deserialize;
-
 
 use crate::util::check_status_code;
 use crate::{OutsourceError, Result};
@@ -19,6 +22,10 @@ const MODEL_KEY: &str = "model";
 const PROMPT_KEY: &str = "prompt";
 const MESSAGES_KEY: &str = "messages";
 const MAX_TOKENS_KEY: &str = "max_tokens";
+const STREAM_KEY: &str = "stream";
+
+const SSE_DATA_PREFIX: &str = "data: ";
+const SSE_DONE_MESSAGE: &str = "[DONE]";
 
 #[derive(Deserialize)]
 struct CompletionChoice {
@@ -36,8 +43,18 @@ struct ChatCompletionResponse {
 }
 
 #[derive(Deserialize)]
+struct ChatCompletionStreamResponse {
+    choices: Vec<ChatCompletionStreamChoice>,
+}
+
+#[derive(Deserialize)]
 struct ChatCompletionChoice {
     message: ChatCompletionChoiceMessage,
+}
+
+#[derive(Deserialize)]
+struct ChatCompletionStreamChoice {
+    delta: ChatCompletionChoiceMessage,
 }
 
 #[derive(Deserialize)]
@@ -45,12 +62,13 @@ struct ChatCompletionChoiceMessage {
     content: String,
 }
 
-pub async fn generate(
+async fn send_generate_request(
     mut request: BackendGenerationRequest,
     model_description: ModelDescription,
     api_key: &str,
-) -> Result<BackendGenerationResponse> {
-    let is_chat_model = model_description.is_chat_model();
+    is_chat_model: bool,
+    should_stream: bool,
+) -> Result<HttpResponse> {
     let endpoint = if is_chat_model {
         CHAT_COMPLETION_ENDPOINT
     } else {
@@ -76,6 +94,10 @@ pub async fn generate(
         body.insert(PROMPT_KEY.to_string(), request.prompt.into());
     }
 
+    if should_stream {
+        body.insert(STREAM_KEY.to_string(), true.into());
+    }
+
     let client = Client::new();
     let response = client
         .post(url)
@@ -86,6 +108,17 @@ pub async fn generate(
 
     let response = check_status_code(response).await?;
 
+    Ok(response)
+}
+
+pub async fn generate(
+    request: BackendGenerationRequest,
+    model_description: ModelDescription,
+    api_key: &str,
+) -> Result<BackendGenerationResponse> {
+    let is_chat_model = model_description.is_chat_model();
+    let response =
+        send_generate_request(request, model_description, api_key, is_chat_model, false).await?;
     let response = if is_chat_model {
         let mut body: ChatCompletionResponse = response.json().await?;
         let choice = body.choices.pop().ok_or(OutsourceError::NoTextInResponse)?;
@@ -97,4 +130,67 @@ pub async fn generate(
     };
 
     Ok(BackendGenerationResponse { response })
+}
+
+fn extract_response_from_stream_event(
+    line_json: &str,
+    is_chat_model: bool,
+) -> Result<BackendGenerationResponse> {
+    let response = if is_chat_model {
+        let mut update: ChatCompletionStreamResponse = serde_json::from_str(line_json)?;
+        let choice = update
+            .choices
+            .pop()
+            .ok_or(OutsourceError::NoTextInResponse)?;
+        choice.delta.content
+    } else {
+        let mut update: CompletionResponse = serde_json::from_str(line_json)?;
+        let choice = update
+            .choices
+            .pop()
+            .ok_or(OutsourceError::NoTextInResponse)?;
+        choice.text
+    };
+    Ok(BackendGenerationResponse { response })
+}
+
+pub async fn generate_stream(
+    request: BackendGenerationRequest,
+    model_description: ModelDescription,
+    api_key: &str,
+) -> Result<NotificationStream<BackendGenerationResponse>> {
+    let is_chat_model = model_description.is_chat_model();
+    let response =
+        send_generate_request(request, model_description, api_key, is_chat_model, true).await?;
+    let mut response_stream = response.bytes_stream();
+    Ok(stream! {
+        let mut buffer = VecDeque::new();
+        while let Some(bytes_result) = response_stream.next().await {
+            match bytes_result {
+                Err(e) => {
+                    let boxed_e: ServiceError = Box::new(e);
+                    yield Err(boxed_e.into());
+                    return;
+                },
+                Ok(bytes) => {
+                    buffer.extend(bytes);
+                }
+            }
+            while let Some(linebreak_pos) = buffer.iter().position(|b| b == &b'\n') {
+                let line_bytes = buffer.drain(0..(linebreak_pos + 1)).collect::<Vec<_>>();
+                if let Ok(line) = std::str::from_utf8(&line_bytes) {
+                    if !line.starts_with(SSE_DATA_PREFIX) {
+                        continue;
+                    }
+                    let line_json = &line[SSE_DATA_PREFIX.len()..];
+                    if line_json.starts_with(SSE_DONE_MESSAGE) {
+                        continue;
+                    }
+                    let result = extract_response_from_stream_event(line_json, is_chat_model);
+                    yield result.map_err(|e| e.into());
+                }
+            }
+        }
+    }
+    .boxed())
 }
