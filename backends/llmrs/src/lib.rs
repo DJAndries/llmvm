@@ -1,6 +1,6 @@
 mod model;
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, ops::Deref, str::FromStr, sync::Arc};
 
 use futures::StreamExt;
 use llm::{InferenceSessionConfig, LoadError, UnsupportedModelArchitecture};
@@ -12,7 +12,13 @@ use llmvm_protocol::{
 use model::LlmrsModel;
 use serde::Deserialize;
 use thiserror::Error;
-use tokio::{sync::RwLock, task::JoinHandle};
+use tokio::{
+    sync::{
+        watch::{self, Ref},
+        Notify, OnceCell, RwLock, RwLockReadGuard,
+    },
+    task::JoinHandle,
+};
 use tracing::error;
 
 pub type Result<T> = std::result::Result<T, LlmrsError>;
@@ -50,7 +56,7 @@ impl Into<ProtocolError> for LlmrsError {
             LlmrsError::InferenceParametersDeserialize(_) => ProtocolErrorType::BadRequest,
             LlmrsError::Inference(_) => ProtocolErrorType::Internal,
             LlmrsError::UserHomeNotFound => ProtocolErrorType::Internal,
-            LlmrsError::ModelNotReady => ProtocolErrorType::BadRequest,
+            LlmrsError::ModelNotReady => ProtocolErrorType::Internal,
         };
         ProtocolError {
             error_type,
@@ -77,7 +83,7 @@ pub struct LlmrsBackend {
     config: LlmrsConfig,
 
     task_handles: RwLock<Vec<JoinHandle<()>>>,
-    models: Arc<RwLock<HashMap<String, Option<LlmrsModel>>>>,
+    models: HashMap<String, Arc<(OnceCell<Option<LlmrsModel>>, Notify)>>,
 }
 
 impl LlmrsBackend {
@@ -95,35 +101,42 @@ impl LlmrsBackend {
         task_handles.push(handle);
     }
 
-    async fn get_model<'a>(
-        models: &'a HashMap<String, Option<LlmrsModel>>,
-        request: &BackendGenerationRequest,
-    ) -> Result<&'a LlmrsModel> {
+    async fn get_model<'a>(&'a self, request: &BackendGenerationRequest) -> Result<&'a LlmrsModel> {
         let model_description = ModelDescription::from_str(&request.model)
             .map_err(|_| LlmrsError::ModelDescriptionParse)?;
-        Ok(models
+        let model_entry = self
+            .models
             .get(&model_description.model_name)
-            .ok_or(LlmrsError::WeightsNotFound)?
-            .as_ref()
-            .ok_or(LlmrsError::ModelNotReady)?)
+            .ok_or(LlmrsError::WeightsNotFound)?;
+        loop {
+            if let Some(model) = model_entry.0.get() {
+                return match model {
+                    Some(model) => Ok(model),
+                    None => Err(LlmrsError::ModelNotReady),
+                };
+            }
+            model_entry.1.notified().await
+        }
     }
 
-    pub async fn load(&self) {
+    pub async fn load(&mut self) {
         for weights_config in &self.config.weights {
-            let name = weights_config.name.clone();
-            self.models.write().await.insert(name, None);
-            let models = self.models.clone();
             let weights_config = weights_config.clone();
+            let model_entry: Arc<(OnceCell<_>, Notify)> = Default::default();
+            self.models
+                .insert(weights_config.name.clone(), model_entry.clone());
             let task_handle = tokio::spawn(async move {
-                let name = weights_config.name.clone();
-                match LlmrsModel::load(weights_config).await {
-                    Err(e) => {
-                        error!("model load failed: {}", e);
-                    }
-                    Ok(model) => {
-                        models.write().await.insert(name, Some(model));
-                    }
-                }
+                model_entry
+                    .0
+                    .set(match LlmrsModel::load(weights_config).await {
+                        Ok(model) => Some(model),
+                        Err(e) => {
+                            error!("model load failed: {}", e);
+                            None
+                        }
+                    })
+                    .ok();
+                model_entry.1.notify_waiters();
             });
             self.store_task_handle(task_handle).await;
         }
@@ -143,8 +156,7 @@ impl Backend for LlmrsBackend {
         request: BackendGenerationRequest,
     ) -> std::result::Result<BackendGenerationResponse, ProtocolError> {
         async {
-            let models = self.models.read().await;
-            let model = Self::get_model(&models, &request).await?;
+            let model = self.get_model(&request).await?;
             model.generate(request).await
         }
         .await
@@ -156,8 +168,7 @@ impl Backend for LlmrsBackend {
         request: BackendGenerationRequest,
     ) -> std::result::Result<NotificationStream<BackendGenerationResponse>, ProtocolError> {
         async {
-            let models = self.models.read().await;
-            let model = Self::get_model(&models, &request).await?;
+            let model = self.get_model(&request).await?;
             let (handle, stream) = model.generate_stream(request).await;
             self.store_task_handle(handle).await;
             Ok(stream

@@ -38,6 +38,7 @@ use crate::{
 };
 
 const API_KEY_HEADER: &str = "X-API-Key";
+const SSE_DATA_PREFIX: &str = "data: ";
 const GENERATE_PATH: &str = "/generate";
 const GENERATE_STREAM_PATH: &str = "/generate_stream";
 
@@ -122,17 +123,14 @@ where
     Response: ResponseHttpConvert<Request, Response> + 'static,
 {
     let payload_stream = notification_stream.map(|result| {
-        let payload =
-            HttpNotificationPayload::from(result.map_err(|e| ProtocolError::from(e)).and_then(
-                |response| {
-                    Response::to_http_response(ServiceResponse::Single(response)).map(|opt| {
-                        opt.and_then(|response| match response {
-                            ModalHttpResponse::Event(value) => Some(value),
-                            _ => None,
-                        })
-                    })
-                },
-            ));
+        let payload = HttpNotificationPayload::from(result.and_then(|response| {
+            Response::to_http_response(ServiceResponse::Single(response)).map(|opt| {
+                opt.and_then(|response| match response {
+                    ModalHttpResponse::Event(value) => Some(value),
+                    _ => None,
+                })
+            })
+        }));
         let payload_str = serde_json::to_string(&payload)?;
         Ok::<String, serde_json::Error>(format!("data: {}\n\n", payload_str))
     });
@@ -162,23 +160,26 @@ where
                 }
             }
             while let Some(linebreak_pos) = buffer.iter().position(|b| b == &b'\n') {
-                let line_bytes = buffer.drain(0..linebreak_pos).collect::<Vec<_>>();
+                let line_bytes = buffer.drain(0..(linebreak_pos + 1)).collect::<Vec<_>>();
                 if let Ok(line) = std::str::from_utf8(&line_bytes) {
-                    if !line.starts_with("data: ") {
+                    if !line.starts_with(SSE_DATA_PREFIX) {
                         continue;
                     }
-                    if let Ok(value) = serde_json::from_str::<Value>(&line[6..]) {
-                        let resp = Response::from_http_response(ModalHttpResponse::Event(value), &original_request).await
-                            .and_then(|response| response.ok_or_else(|| generic_error(ProtocolErrorType::NotFound)))
-                            .and_then(|response| match response {
-                                ServiceResponse::Single(response) => Ok(response),
-                                _ => Err(generic_error(ProtocolErrorType::NotFound))
-                            });
-                        yield resp;
+                    if let Ok(payload) = serde_json::from_str::<HttpNotificationPayload>(&line[SSE_DATA_PREFIX.len()..]) {
+                        let result: Result<Value, ProtocolError> = payload.into();
+                        match result {
+                            Err(e) => yield Err(e),
+                            Ok(value) => {
+                                yield Response::from_http_response(ModalHttpResponse::Event(value), &original_request).await
+                                    .and_then(|response| response.ok_or_else(|| generic_error(ProtocolErrorType::NotFound)))
+                                    .and_then(|response| match response {
+                                        ServiceResponse::Single(response) => Ok(response),
+                                        _ => Err(generic_error(ProtocolErrorType::NotFound))
+                                    });
+                            }
+                        }
                     }
                 }
-                buffer.drain(0..linebreak_pos);
-                buffer.remove(linebreak_pos);
             }
         }
     }.boxed()
@@ -199,6 +200,16 @@ impl From<Result<Option<Value>, ProtocolError>> for HttpNotificationPayload {
             Err(e) => (None, Some(e.into())),
         };
         Self { result, error }
+    }
+}
+
+impl Into<Result<Value, ProtocolError>> for HttpNotificationPayload {
+    fn into(self) -> Result<Value, ProtocolError> {
+        if let Some(e) = self.error {
+            return Err(e.into());
+        }
+        self.result
+            .ok_or_else(|| generic_error(ProtocolErrorType::NotFound))
     }
 }
 
@@ -350,10 +361,9 @@ impl ResponseHttpConvert<BackendRequest, BackendResponse> for BackendResponse {
                 BackendRequest::Generation(_) => ServiceResponse::Single(
                     BackendResponse::Generation(parse_response(response).await?),
                 ),
-                BackendRequest::GenerationStream(request) => ServiceResponse::Multiple(
+                BackendRequest::GenerationStream(_) => ServiceResponse::Multiple(
                     notification_sse_stream(original_request.clone(), response),
                 ),
-                _ => return Ok(None),
             },
             ModalHttpResponse::Event(event) => ServiceResponse::Single(match original_request {
                 BackendRequest::GenerationStream(_) => {
@@ -376,7 +386,6 @@ impl ResponseHttpConvert<BackendRequest, BackendResponse> for BackendResponse {
                 BackendResponse::GenerationStream(response) => {
                     ModalHttpResponse::Event(serde_json::to_value(response).unwrap())
                 }
-                _ => return Ok(None),
             },
             ServiceResponse::Multiple(stream) => {
                 ModalHttpResponse::Single(notification_sse_response(stream))

@@ -1,3 +1,4 @@
+use std::io::{stdout, Write};
 use std::pin::Pin;
 use std::{process::exit, sync::Arc};
 
@@ -135,6 +136,7 @@ async fn main() -> std::io::Result<()> {
                                 }
                                 Ok(response) => {
                                     print!("{}", response.response);
+                                    stdout().flush().ok();
                                     if let Some(id) = response.thread_id {
                                         eprintln!("\nThread ID is {}", id);
                                     }

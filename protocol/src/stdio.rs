@@ -1,5 +1,5 @@
 use futures::{
-    stream::{pending, FuturesUnordered},
+    stream::{pending, select_all::select_all, FuturesUnordered, SelectAll},
     Stream, StreamExt,
 };
 use serde_json::Value;
@@ -134,7 +134,9 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
             JsonRpcMessage::Notification(resp) => {
                 let result = resp.get_result()?;
                 Ok(Some(match original_request {
-                    CoreRequest::GenerationStream(_) => Self::Generation(parse_from_value(result)?),
+                    CoreRequest::GenerationStream(_) => {
+                        Self::GenerationStream(parse_from_value(result)?)
+                    }
                     _ => return Ok(None),
                 }))
             }
@@ -205,7 +207,7 @@ impl ResponseJsonRpcConvert<BackendRequest, BackendResponse> for BackendResponse
                 let result = resp.get_result()?;
                 match original_request {
                     BackendRequest::GenerationStream(_) => {
-                        Self::Generation(parse_from_value(result)?)
+                        Self::GenerationStream(parse_from_value(result)?)
                     }
                     _ => return Ok(None),
                 }
@@ -246,25 +248,6 @@ struct IdentifiedNotification<Response> {
     result: Option<Result<Response, ProtocolError>>,
 }
 
-struct ServerNotificationLink<Response> {
-    id: u64,
-    stream: NotificationStream<Response>,
-}
-
-impl<Response> Stream for ServerNotificationLink<Response> {
-    type Item = IdentifiedNotification<Response>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.stream.as_mut().poll_next(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => Poll::Ready(Some(IdentifiedNotification {
-                id: self.id,
-                result,
-            })),
-        }
-    }
-}
-
 pub struct StdioServer<Request, Response, S>
 where
     Request: RequestJsonRpcConvert<Request> + Send,
@@ -280,8 +263,40 @@ where
     service: Timeout<S>,
     stdin: BufReader<Stdin>,
     stdout: Arc<Mutex<Stdout>>,
-    notification_streams: Arc<Mutex<HashMap<u64, ServerNotificationLink<Response>>>>,
+    notification_streams_tx: Option<UnboundedSender<ServerNotificationLink<Response>>>,
     request_phantom: PhantomData<Request>,
+}
+
+struct ServerNotificationLink<Response> {
+    id: u64,
+    stream: NotificationStream<Response>,
+    is_complete: bool,
+}
+
+impl<Response> Stream for ServerNotificationLink<Response> {
+    type Item = IdentifiedNotification<Response>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.stream.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => match result {
+                None => match self.is_complete {
+                    true => Poll::Ready(None),
+                    false => {
+                        self.is_complete = true;
+                        Poll::Ready(Some(IdentifiedNotification {
+                            id: self.id,
+                            result: None,
+                        }))
+                    }
+                },
+                Some(result) => Poll::Ready(Some(IdentifiedNotification {
+                    id: self.id,
+                    result: Some(result),
+                })),
+            },
+        }
+    }
 }
 
 impl<Request, Response, S> StdioServer<Request, Response, S>
@@ -297,23 +312,13 @@ where
         + 'static,
 {
     pub fn new(service: S) -> Self {
-        let new = Self {
+        Self {
             service: Timeout::new(service, Duration::from_secs(COMMAND_TIMEOUT_SECS)),
             stdin: BufReader::new(stdin()),
             stdout: Arc::new(Mutex::new(stdout())),
-            notification_streams: Default::default(),
+            notification_streams_tx: None,
             request_phantom: Default::default(),
-        };
-        // insert dummy notification stream so that tokio::select (in main loop)
-        // does not immediately return if no streams exist
-        new.notification_streams.blocking_lock().insert(
-            u64::MAX,
-            ServerNotificationLink {
-                id: u64::MAX,
-                stream: Box::pin(pending()),
-            },
-        );
-        new
+        }
     }
 
     async fn output_message(stdout: &Mutex<Stdout>, message: JsonRpcMessage) {
@@ -328,7 +333,10 @@ where
 
     fn handle_request(&mut self, serialized_request: String) {
         let stdout = self.stdout.clone();
-        let notification_streams = self.notification_streams.clone();
+        let notification_streams_tx = self
+            .notification_streams_tx
+            .clone()
+            .expect("notfication_streams_tx should be initialized");
 
         let value: Value = serde_json::from_str(&serialized_request).unwrap_or_default();
         let (result_future, id) = match JsonRpcMessage::try_from(value) {
@@ -371,10 +379,13 @@ where
                         .await;
                     }
                     ServiceResponse::Multiple(stream) => {
-                        notification_streams
-                            .lock()
-                            .await
-                            .insert(id, ServerNotificationLink { id, stream });
+                        notification_streams_tx
+                            .send(ServerNotificationLink {
+                                id,
+                                stream,
+                                is_complete: false,
+                            })
+                            .ok();
                     }
                 },
                 Err(e) => {
@@ -389,34 +400,38 @@ where
     }
 
     pub async fn run(mut self) -> std::io::Result<()> {
+        // insert dummy notification stream so that tokio::select (in main loop)
+        // does not immediately return if no streams exist
+        let (notification_stream_tx, mut notification_stream_rx) = mpsc::unbounded_channel();
+        self.notification_streams_tx = Some(notification_stream_tx);
+        let mut notification_streams: SelectAll<ServerNotificationLink<Response>> =
+            select_all([ServerNotificationLink {
+                id: u64::MAX,
+                stream: pending().boxed(),
+                is_complete: false,
+            }]);
         loop {
             let mut serialized_request = String::new();
-            let mut notification_streams = self.notification_streams.lock().await;
-            let mut notification_futures = notification_streams
-                .values_mut()
-                .map(|s| s.next())
-                .collect::<FuturesUnordered<_>>();
             tokio::select! {
                 read_result = self.stdin.read_line(&mut serialized_request) => {
-                    drop(notification_futures);
-                    drop(notification_streams);
                     if read_result? == 0 {
                         break;
                     }
                     self.handle_request(serialized_request);
                 },
-                id_notification = notification_futures.next() => {
-                    let id_notification = id_notification.unwrap().unwrap();
+                id_notification = notification_streams.next() => {
+                    let id_notification = id_notification.unwrap();
                     match id_notification.result {
                         Some(result) => {
                             Self::output_message(self.stdout.as_ref(), Response::into_jsonrpc_message(result.map_err(|e| e.into()), id_notification.id.into())).await;
                         },
                         None => {
                             Self::output_message(self.stdout.as_ref(), JsonRpcNotification::new(id_notification.id.to_string(), None).into()).await;
-                            drop(notification_futures);
-                            notification_streams.remove(&id_notification.id);
                         }
                     }
+                }
+                stream = notification_stream_rx.recv() => {
+                    notification_streams.push(stream.unwrap());
                 }
             }
         }

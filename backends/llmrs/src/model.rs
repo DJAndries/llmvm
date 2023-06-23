@@ -2,9 +2,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::{LlmrsError, LlmrsWeightsConfig, Result};
+use llm::samplers::TopPTopK;
 use llm::{
     InferenceParameters, InferenceRequest, InferenceSession, LoadProgress, Model,
-    ModelArchitecture, ModelParameters, OutputRequest, Prompt,
+    ModelArchitecture, ModelParameters, OutputRequest, Prompt, VocabularySource,
 };
 use llmvm_protocol::{BackendGenerationRequest, BackendGenerationResponse};
 use llmvm_util::get_file_path;
@@ -19,7 +20,7 @@ use tracing::{debug, info};
 const WEIGHT_FILENAME_EXT: &str = ".bin";
 
 pub struct LlmrsModel {
-    model: Arc<Box<dyn Model>>,
+    model: Arc<dyn Model>,
     weights_config: LlmrsWeightsConfig,
 }
 
@@ -37,6 +38,7 @@ struct SerializableInferenceParameters {
 impl Into<InferenceParameters> for SerializableInferenceParameters {
     fn into(self) -> InferenceParameters {
         let mut result = InferenceParameters::default();
+        let mut sampler = TopPTopK::default();
         if let Some(n_threads) = self.n_threads {
             result.n_threads = n_threads;
         }
@@ -44,20 +46,21 @@ impl Into<InferenceParameters> for SerializableInferenceParameters {
             result.n_batch = n_batch;
         }
         if let Some(top_k) = self.top_k {
-            result.top_k = top_k;
+            sampler.top_k = top_k;
         }
         if let Some(top_p) = self.top_p {
-            result.top_p = top_p;
+            sampler.top_p = top_p;
         }
         if let Some(repeat_penalty) = self.repeat_penalty {
-            result.repeat_penalty = repeat_penalty;
+            sampler.repeat_penalty = repeat_penalty;
         }
         if let Some(temperature) = self.temperature {
-            result.temperature = temperature;
+            sampler.temperature = temperature;
         }
         if let Some(n) = self.repetition_penalty_last_n {
-            result.repetition_penalty_last_n = n;
+            sampler.repetition_penalty_last_n = n;
         }
+        result.sampler = Arc::new(sampler);
         result
     }
 }
@@ -74,10 +77,14 @@ impl LlmrsModel {
             ..Default::default()
         };
         let name = weights_config.name.clone();
-        let model = Arc::new(
+        let model = Arc::from(
             tokio::task::spawn_blocking(move || {
-                llm::load_dynamic(architecture, &weights_path, parameters, None, |progress| {
-                    match progress {
+                llm::load_dynamic(
+                    architecture,
+                    &weights_path,
+                    VocabularySource::Model,
+                    parameters,
+                    |progress| match progress {
                         LoadProgress::TensorLoaded {
                             current_tensor,
                             tensor_count,
@@ -86,8 +93,8 @@ impl LlmrsModel {
                             debug!("Load progress for {}: {:.2}%", name, percentage)
                         }
                         _ => (),
-                    }
-                })
+                    },
+                )
             })
             .await
             .expect("model load task should join")?,
@@ -101,7 +108,7 @@ impl LlmrsModel {
 
     fn perform_inference(
         mut session: InferenceSession,
-        model: Arc<Box<dyn Model>>,
+        model: Arc<dyn Model>,
         request: BackendGenerationRequest,
         response_tx: &UnboundedSender<Result<String>>,
     ) -> Result<()> {
@@ -121,7 +128,7 @@ impl LlmrsModel {
         let mut rng = thread_rng();
         session
             .infer::<LlmrsError>(
-                model.as_ref().as_ref(),
+                model.as_ref(),
                 &mut rng,
                 &inference_request,
                 &mut OutputRequest::default(),

@@ -107,7 +107,14 @@ where
                     .generate(req)
                     .await
                     .map(|v| ServiceResponse::Single(BackendResponse::Generation(v))),
-                BackendRequest::GenerationStream(req) => todo!(),
+                BackendRequest::GenerationStream(req) => {
+                    backend.generate_stream(req).await.map(|s| {
+                        ServiceResponse::Multiple(
+                            s.map(|resp| resp.map(|resp| BackendResponse::GenerationStream(resp)))
+                                .boxed(),
+                        )
+                    })
+                }
             }?)
         })
     }

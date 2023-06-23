@@ -52,11 +52,11 @@ async fn main() -> io::Result<()> {
         },
     );
 
-    let backend = Arc::new(LlmrsBackend::new(config.lib_config));
+    let mut backend = LlmrsBackend::new(config.lib_config);
 
     backend.load().await;
 
-    run_backend(cli.command, backend, config.http_server)
+    run_backend(cli.command, Arc::new(backend), config.http_server)
         .await
         .map_err(|e| io::Error::new(ErrorKind::Other, e))
 }
