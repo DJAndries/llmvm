@@ -4,6 +4,7 @@ mod util;
 
 use std::str::FromStr;
 
+use futures::{stream::once, StreamExt};
 use llmvm_protocol::{
     async_trait, Backend, BackendGenerationRequest, BackendGenerationResponse, ModelDescription,
     NotificationStream, ProtocolError, ProtocolErrorType,
@@ -36,8 +37,6 @@ pub enum OutsourceError {
     ModelDescriptionParse,
     #[error("model parameters should be object")]
     ModelParamsNotObject,
-    #[error("generation streaming not available for this provider")]
-    StreamingNotAvailable,
 }
 
 #[derive(Display, EnumString)]
@@ -63,7 +62,6 @@ impl Into<ProtocolError> for OutsourceError {
             OutsourceError::NoTextInResponse => ProtocolErrorType::Internal,
             OutsourceError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
             OutsourceError::ModelParamsNotObject => ProtocolErrorType::BadRequest,
-            OutsourceError::StreamingNotAvailable => ProtocolErrorType::BadRequest,
         };
         ProtocolError {
             error_type,
@@ -145,7 +143,16 @@ impl Backend for OutsourceBackend {
                     )
                     .await
                 }
-                _ => return Err(OutsourceError::StreamingNotAvailable),
+                Provider::HuggingFaceText => {
+                    let api_key =
+                        get_api_key(self.config.huggingface_api_key.as_ref())?.to_string();
+                    Ok(once(async move {
+                        huggingface::generate(request, model_description, &api_key)
+                            .await
+                            .map_err(|e| e.into())
+                    })
+                    .boxed())
+                }
             }
         }
         .await

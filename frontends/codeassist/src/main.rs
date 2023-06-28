@@ -44,6 +44,8 @@ pub struct CodeAssistConfig {
 
     prefer_insert_in_place: bool,
     default_preset: String,
+
+    stream_snippets: bool,
 }
 
 impl Default for CodeAssistConfig {
@@ -54,6 +56,7 @@ impl Default for CodeAssistConfig {
             http_core: None,
             prefer_insert_in_place: false,
             default_preset: DEFAULT_PRESET.to_string(),
+            stream_snippets: false,
         }
     }
 }

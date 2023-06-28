@@ -1,18 +1,18 @@
 use std::{
     collections::{HashMap, HashSet},
-    error::Error,
     hash::{Hash, Hasher},
     pin::Pin,
     sync::Arc,
+    task::Poll,
 };
 
 use anyhow::{anyhow, bail, Result};
-use futures::{future::join_all, Future};
+use futures::{future::join_all, stream::select_all, Stream, StreamExt};
 use llmvm_protocol::{
-    services::{BoxedService, ServiceError, ServiceFuture, ServiceResponse},
-    stdio::{CoreRequest, CoreResponse, StdioClient},
+    services::{BoxedService, ServiceFuture, ServiceResponse},
+    stdio::{CoreRequest, CoreResponse},
     tower::timeout::future::ResponseFuture,
-    GenerationParameters, GenerationRequest,
+    GenerationParameters, GenerationRequest, GenerationResponse, NotificationStream,
 };
 use lsp_types::{
     notification::Progress,
@@ -29,7 +29,7 @@ use lsp_types::{
 use serde::Serialize;
 use serde_json::Value;
 use tokio::{sync::Mutex, task::JoinError};
-use tower::{timeout::Timeout, Service, ServiceExt};
+use tower::{timeout::Timeout, Service};
 use tracing::{debug, error};
 
 use crate::{
@@ -41,6 +41,7 @@ use crate::{
 
 const PROGRESS_TOKEN_PREFIX: &str = "llmvm/complete/";
 const PRESET_LIST_PREFIX: &str = "ccpr=";
+const CODE_WRAP_MD_TOKEN: &str = "``";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct HashableLocation(pub Location);
@@ -84,6 +85,50 @@ struct PromptParameters {
 struct CompletedSnippet {
     preset: String,
     snippet: String,
+}
+
+struct CompletingSnippet {
+    preset: String,
+    stream: IdentifiedGenerationResponseStream,
+}
+
+struct IdentifiedGenerationResponse {
+    id: usize,
+    response: Result<GenerationResponse>,
+}
+
+struct IdentifiedGenerationResponseStream {
+    id: usize,
+    stream: NotificationStream<CoreResponse>,
+}
+
+#[derive(Default)]
+struct SnippetOffsetInfo {
+    position: Position,
+    is_skipping: bool,
+}
+
+impl Stream for IdentifiedGenerationResponseStream {
+    type Item = IdentifiedGenerationResponse;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match self.stream.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(resp) => Poll::Ready(resp.map(|r| {
+                let r = r.map_err(|e| anyhow!(e)).and_then(|r| match r {
+                    CoreResponse::GenerationStream(r) => Ok(r),
+                    _ => Err(anyhow!("unexpected response from llmvm")),
+                });
+                IdentifiedGenerationResponse {
+                    id: self.id,
+                    response: r,
+                }
+            })),
+        }
+    }
 }
 
 impl From<FoldingRange> for SimpleFoldingRange {
@@ -413,35 +458,22 @@ impl CodeCompleteTask {
         &mut self,
         preset: String,
         prompt_params: Value,
+        should_stream: bool,
     ) -> ResponseFuture<ServiceFuture<ServiceResponse<CoreResponse>>> {
-        self.llmvm_core_service
-            .lock()
-            .await
-            .call(CoreRequest::Generation(GenerationRequest {
-                parameters: Some(GenerationParameters {
-                    prompt_parameters: Some(prompt_params),
-                    ..Default::default()
-                }),
-                existing_thread_id: None,
-                save_thread: false,
-                preset_id: Some(preset.clone()),
-            }))
-    }
-    async fn handle_generation_response(
-        response_future: ResponseFuture<ServiceFuture<ServiceResponse<CoreResponse>>>,
-        preset: String,
-    ) -> Result<CompletedSnippet> {
-        let response = response_future.await.map_err(|e| anyhow!(e))?;
-        match response {
-            ServiceResponse::Single(response) => match response {
-                CoreResponse::Generation(response) => Ok(CompletedSnippet {
-                    preset,
-                    snippet: response.response,
-                }),
-                _ => bail!("unexpected response from llmvm"),
-            },
-            _ => bail!("unexpected service response type from llmvm"),
-        }
+        let request = GenerationRequest {
+            parameters: Some(GenerationParameters {
+                prompt_parameters: Some(prompt_params),
+                ..Default::default()
+            }),
+            existing_thread_id: None,
+            save_thread: false,
+            preset_id: Some(preset.clone()),
+        };
+        let request = match should_stream {
+            true => CoreRequest::GenerationStream(request),
+            false => CoreRequest::Generation(request),
+        };
+        self.llmvm_core_service.lock().await.call(request)
     }
 
     async fn create_progress_token(&mut self) -> Result<ProgressToken> {
@@ -535,37 +567,9 @@ impl CodeCompleteTask {
         format!("{}\n{}\n{}\n", top_line, snippet, bottom_line)
     }
 
-    async fn apply_edit(&mut self, completed_snippets: Vec<CompletedSnippet>) -> Result<()> {
-        let insert_in_place = self.config.prefer_insert_in_place && completed_snippets.len() == 1;
-        let mut snippets_text = completed_snippets
-            .into_iter()
-            .map(|completed_snippet| {
-                let snippet_text = completed_snippet
-                    .snippet
-                    .split("\n")
-                    .filter(|line| !line.starts_with("```"))
-                    .collect::<Vec<&str>>()
-                    .join("\n");
-                match insert_in_place {
-                    false => Self::wrap_snippet(snippet_text, completed_snippet.preset),
-                    true => snippet_text,
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("");
-        let mut changes = HashMap::new();
-        let text_edit = match insert_in_place {
-            false => {
-                snippets_text.push('\n');
-                let next_line_pos = Position::new(self.code_location.range.end.line + 1, 0);
-                TextEdit::new(
-                    Range::new(next_line_pos.clone(), next_line_pos),
-                    snippets_text,
-                )
-            }
-            true => TextEdit::new(self.code_location.range.clone(), snippets_text),
-        };
-        changes.insert(self.code_location.uri.clone(), vec![text_edit]);
+    async fn apply_edit(&mut self, range: Range, snippet_text: String) -> Result<()> {
+        let text_edit = TextEdit::new(range, snippet_text);
+        let changes = HashMap::from([(self.code_location.uri.clone(), vec![text_edit])]);
         self.passthrough_service
             .call(LspMessageInfo::new(
                 LspMessage::new_request::<ApplyWorkspaceEdit>(ApplyWorkspaceEditParams {
@@ -576,6 +580,205 @@ impl CodeCompleteTask {
                 false,
             ))
             .await?;
+        Ok(())
+    }
+
+    async fn apply_completed_snippet_edits(
+        &mut self,
+        completed_snippets: Vec<CompletedSnippet>,
+    ) -> Result<()> {
+        let insert_in_place = self.config.prefer_insert_in_place && completed_snippets.len() == 1;
+        let mut snippets_text = completed_snippets
+            .into_iter()
+            .map(|completed_snippet| {
+                let snippet_text = completed_snippet
+                    .snippet
+                    .split("\n")
+                    .filter(|line| !line.starts_with(CODE_WRAP_MD_TOKEN))
+                    .collect::<Vec<&str>>()
+                    .join("\n");
+                match insert_in_place {
+                    false => Self::wrap_snippet(snippet_text, completed_snippet.preset),
+                    true => snippet_text,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        let (range, snippets_text) = match insert_in_place {
+            false => {
+                snippets_text.push('\n');
+                let next_line_pos = Position::new(self.code_location.range.end.line, 0);
+                (
+                    Range::new(next_line_pos.clone(), next_line_pos),
+                    snippets_text,
+                )
+            }
+            true => (self.code_location.range.clone(), snippets_text),
+        };
+        self.apply_edit(range, snippets_text).await?;
+        Ok(())
+    }
+
+    fn update_offset_and_filter_text<'a>(
+        &self,
+        offset: &mut SnippetOffsetInfo,
+        text: &'a str,
+    ) -> &'a str {
+        let mut filtered_start_index = 0;
+        for (i, ch) in text.chars().enumerate() {
+            if ch == '\n' {
+                if offset.is_skipping {
+                    filtered_start_index += 1;
+                    offset.is_skipping = false;
+                } else {
+                    offset.position.line += 1;
+                }
+                offset.position.character = 0;
+            } else if !offset.is_skipping {
+                if offset.position.character == 0 && &text[0..(i + 1)] == CODE_WRAP_MD_TOKEN {
+                    offset.is_skipping = true;
+
+                    filtered_start_index = i + 1;
+                    offset.position.character = 0;
+                } else {
+                    offset.position.character += 1;
+                }
+            } else {
+                filtered_start_index += 1;
+            }
+        }
+        &text[filtered_start_index..text.len()]
+    }
+
+    async fn apply_completing_snippet_edits(
+        &mut self,
+        completing_snippets: Vec<CompletingSnippet>,
+    ) -> Result<()> {
+        let insert_in_place = self.config.prefer_insert_in_place && completing_snippets.len() == 1;
+        let start_position = match insert_in_place {
+            true => {
+                self.apply_edit(self.code_location.range.clone(), "".to_string())
+                    .await?;
+                self.code_location.range.start.clone()
+            }
+            false => {
+                let mut position = Position::new(self.code_location.range.end.line, 0);
+                let snippet_wrappers = completing_snippets
+                    .iter()
+                    .map(|s| Self::wrap_snippet(String::new(), s.preset.clone()))
+                    .collect::<Vec<_>>()
+                    .join("");
+                self.apply_edit(
+                    Range::new(position.clone(), position.clone()),
+                    snippet_wrappers,
+                )
+                .await?;
+                // skip the initial snippet header
+                position.line += 1;
+                position
+            }
+        };
+        let mut snippet_offsets: Vec<_> = completing_snippets
+            .iter()
+            .map(|_| SnippetOffsetInfo::default())
+            .collect();
+        let mut streams = select_all(completing_snippets.into_iter().map(|cs| cs.stream));
+        while let Some(response) = streams.next().await {
+            let before_line_offset_sum =
+                snippet_offsets[0..response.id]
+                    .iter()
+                    .fold(0, |mut acc, offset| {
+                        acc += offset.position.line;
+                        if !insert_in_place {
+                            // skip another snippet header
+                            acc += 3;
+                        }
+                        acc
+                    });
+            let offset = snippet_offsets
+                .as_mut_slice()
+                .iter_mut()
+                .enumerate()
+                .find(|(id, _)| id == &response.id)
+                .map(|(_, offset)| offset)
+                .unwrap();
+            let total_line_offset = before_line_offset_sum + offset.position.line;
+            let character_pos = match total_line_offset == 0 {
+                true => start_position.character + offset.position.character,
+                false => offset.position.character,
+            };
+            let real_position =
+                Position::new(start_position.line + total_line_offset, character_pos);
+            let text = response.response?.response;
+            let filtered_text = self.update_offset_and_filter_text(offset, &text);
+            self.apply_edit(
+                Range::new(real_position.clone(), real_position.clone()),
+                filtered_text.to_string(),
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn process_whole(&mut self, presets: Vec<String>, prompt_params: Value) -> Result<()> {
+        let mut tasks = Vec::new();
+        for preset in presets {
+            let response_future = self
+                .send_generation_request(preset.clone(), prompt_params.clone(), false)
+                .await;
+            tasks.push(tokio::spawn(async move {
+                let response = response_future.await.map_err(|e| anyhow!(e))?;
+                match response {
+                    ServiceResponse::Single(response) => match response {
+                        CoreResponse::Generation(response) => Ok(CompletedSnippet {
+                            preset,
+                            snippet: response.response,
+                        }),
+                        _ => bail!("unexpected response from llmvm"),
+                    },
+                    _ => bail!("unexpected service response type from llmvm"),
+                }
+            }));
+        }
+
+        let completed_snippets = join_all(tasks)
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, JoinError>>()?
+            .into_iter()
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
+        debug!("completed snippets: {:#?}", completed_snippets);
+
+        self.apply_completed_snippet_edits(completed_snippets)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn process_stream(&mut self, presets: Vec<String>, prompt_params: Value) -> Result<()> {
+        let mut completing_snippets = Vec::new();
+        for (id, preset) in presets.into_iter().enumerate() {
+            let response = self
+                .send_generation_request(preset.clone(), prompt_params.clone(), true)
+                .await
+                .await
+                .map_err(|e| anyhow!(e))?;
+            match response {
+                ServiceResponse::Multiple(stream) => {
+                    completing_snippets.push(CompletingSnippet {
+                        preset: preset.clone(),
+                        stream: IdentifiedGenerationResponseStream { id, stream },
+                    });
+                }
+                _ => bail!("unexpected service response type from llmvm"),
+            }
+        }
+
+        self.apply_completing_snippet_edits(completing_snippets)
+            .await?;
+
         Ok(())
     }
 
@@ -635,25 +838,11 @@ impl CodeCompleteTask {
             main_snippet,
         })?;
 
-        let mut tasks = Vec::new();
-        for preset in presets {
-            let response_future = self
-                .send_generation_request(preset.clone(), prompt_params.clone())
-                .await;
-            tasks.push(tokio::spawn(async move {
-                Self::handle_generation_response(response_future, preset).await
-            }))
+        if self.config.stream_snippets {
+            self.process_stream(presets, prompt_params).await?;
+        } else {
+            self.process_whole(presets, prompt_params).await?;
         }
-        let completed_snippets = join_all(tasks)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, JoinError>>()?
-            .into_iter()
-            .collect::<Result<Vec<_>, anyhow::Error>>()?;
-
-        debug!("completed snippets: {:#?}", completed_snippets);
-
-        self.apply_edit(completed_snippets).await?;
 
         Ok(())
     }

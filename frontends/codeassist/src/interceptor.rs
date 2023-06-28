@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use llmvm_protocol::{
     jsonrpc::{JsonRpcMessage, JsonRpcRequest},
     services::BoxedService,
-    stdio::{CoreRequest, CoreResponse, StdioClient},
+    stdio::{CoreRequest, CoreResponse},
 };
 use lsp_types::{
     request::{CodeActionRequest, ExecuteCommand, Initialize, Request},
