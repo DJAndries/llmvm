@@ -15,7 +15,7 @@ use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, Core, GenerationParameters,
     GenerationRequest, GenerationResponse, HttpClientConfig, HttpServerConfig, Message,
     MessageRole, ModelDescription, NotificationStream, ProtocolError, ProtocolErrorType,
-    SerializableProtocolError,
+    SerializableProtocolError, ThreadInfo,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use rand::distributions::Alphanumeric;
@@ -23,9 +23,12 @@ use rand::{thread_rng, Rng};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::Value;
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 
 use std::fs::create_dir;
 use std::pin::Pin;
+use std::time::Duration;
 use std::{
     cell::RefCell,
     collections::HashMap,
@@ -94,7 +97,7 @@ impl Into<ProtocolError> for CoreError {
             CoreError::UserHomeNotFound => ProtocolErrorType::Internal,
             CoreError::JsonSerialization(_) => ProtocolErrorType::BadRequest,
             CoreError::TomlSerialization(_) => ProtocolErrorType::BadRequest,
-            CoreError::ThreadNotFound => ProtocolErrorType::BadRequest,
+            CoreError::ThreadNotFound => ProtocolErrorType::NotFound,
             CoreError::PresetNotFound => ProtocolErrorType::BadRequest,
             CoreError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
             CoreError::BackendStdio(error) => error.error_type.clone(),
@@ -218,12 +221,19 @@ impl ReadyPrompt {
         Self::process(&template, parameters, is_chat_model)
     }
 
-    pub async fn from_custom_template(
+    pub fn from_custom_template(
         template: &str,
         parameters: &Value,
         is_chat_model: bool,
     ) -> Result<Self> {
         Self::process(template, parameters, is_chat_model)
+    }
+
+    pub fn from_custom_prompt(main_prompt: String) -> Self {
+        Self {
+            system_prompt: None,
+            main_prompt,
+        }
     }
 }
 
@@ -249,22 +259,19 @@ fn thread_path(id: &str) -> Result<PathBuf> {
 }
 
 async fn clean_old_threads_in_dir(directory: &Path, ttl_secs: u64) -> Result<()> {
-    let expiry_time = current_timestamp_secs() - ttl_secs;
+    let ttl_duration = Duration::from_secs(ttl_secs);
     if let Ok(mut dir_entries) = fs::read_dir(directory).await {
         while let Some(entry) = dir_entries.next_entry().await? {
             let path = entry.path();
             if path.extension() != Some("json".as_ref()) {
                 continue;
             }
-            let file_name = path.file_stem().unwrap().to_str().unwrap();
-            if let Ok(timestamp) = file_name
-                .split("_")
-                .nth(1)
-                .unwrap_or_default()
-                .parse::<u64>()
-            {
-                if timestamp < expiry_time {
-                    fs::remove_file(path).await?;
+            let metadata = entry.metadata().await?;
+            if let Ok(modified) = metadata.modified() {
+                if let Ok(age) = modified.elapsed() {
+                    if age > ttl_duration {
+                        fs::remove_file(path).await?;
+                    }
                 }
             }
         }
@@ -286,14 +293,53 @@ async fn clean_old_threads(ttl_secs: u64) -> Result<()> {
     Ok(())
 }
 
+async fn get_thread_infos_in_dir(directory: &Path) -> Result<Vec<ThreadInfo>> {
+    let mut result = Vec::new();
+    if let Ok(mut dir_entries) = fs::read_dir(directory).await {
+        while let Some(entry) = dir_entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension() != Some("json".as_ref()) {
+                continue;
+            }
+            let metadata = entry.metadata().await?;
+            if let Ok(modified) = metadata.modified() {
+                if let Some(id) = path.file_stem().and_then(|s| s.to_str()) {
+                    result.push(ThreadInfo {
+                        id: id.to_string(),
+                        modified: OffsetDateTime::from(modified).format(&Rfc3339).unwrap(),
+                    });
+                }
+            }
+        }
+    }
+    result.sort_by_cached_key(|ti| ti.modified.clone());
+    result.reverse();
+    Ok(result)
+}
+
+async fn get_thread_infos() -> Result<Vec<ThreadInfo>> {
+    if let Some(project_dir) = get_project_dir() {
+        let result =
+            get_thread_infos_in_dir(&project_dir.join(DirType::Threads.to_string())).await?;
+        if !result.is_empty() {
+            return Ok(result);
+        }
+    }
+    if let Some(home_dirs) = get_home_dirs() {
+        return Ok(get_thread_infos_in_dir(
+            &home_dirs.data_dir().join(DirType::Threads.to_string()),
+        )
+        .await?);
+    }
+    Ok(Vec::new())
+}
+
 fn new_thread_id() -> String {
-    let suffix: String = thread_rng()
+    thread_rng()
         .sample_iter(&Alphanumeric)
-        .take(5)
+        .take(8)
         .map(char::from)
-        .collect();
-    let timestamp = current_timestamp_secs();
-    format!("{}-{}", timestamp, suffix)
+        .collect()
 }
 
 async fn save_thread(thread_id: &str, messages: Vec<Message>) -> Result<()> {
@@ -478,8 +524,7 @@ impl LLMVMCore {
 
         let prompt = match parameters.custom_prompt_template {
             Some(template) => {
-                ReadyPrompt::from_custom_template(&template, &prompt_parameters, is_chat_model)
-                    .await?
+                ReadyPrompt::from_custom_template(&template, &prompt_parameters, is_chat_model)?
             }
             None => match parameters.prompt_template_id {
                 Some(template_id) => {
@@ -490,7 +535,13 @@ impl LLMVMCore {
                     )
                     .await?
                 }
-                None => return Err(CoreError::TemplateNotFound),
+                None => ReadyPrompt::from_custom_prompt(
+                    request
+                        .custom_prompt
+                        .as_ref()
+                        .ok_or(CoreError::TemplateNotFound)?
+                        .clone(),
+                ),
             },
         };
 
@@ -646,6 +697,23 @@ impl Core for LLMVMCore {
         }
         .await
         .map_err(|e: CoreError| e.into())
+    }
+
+    async fn get_last_thread_info(&self) -> std::result::Result<Option<ThreadInfo>, ProtocolError> {
+        async { Ok(get_thread_infos().await?.drain(0..1).next()) }
+            .await
+            .map_err(|e: CoreError| e.into())
+    }
+
+    async fn get_all_thread_infos(&self) -> std::result::Result<Vec<ThreadInfo>, ProtocolError> {
+        get_thread_infos().await.map_err(|e| e.into())
+    }
+
+    async fn get_thread_messages(
+        &self,
+        id: String,
+    ) -> std::result::Result<Vec<Message>, ProtocolError> {
+        get_thread_messages(&id).await.map_err(|e| e.into())
     }
 
     fn init_project(&self) -> std::result::Result<(), ProtocolError> {

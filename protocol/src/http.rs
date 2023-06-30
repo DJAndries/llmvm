@@ -41,6 +41,9 @@ const API_KEY_HEADER: &str = "X-API-Key";
 const SSE_DATA_PREFIX: &str = "data: ";
 const GENERATE_PATH: &str = "/generate";
 const GENERATE_STREAM_PATH: &str = "/generate_stream";
+const GET_LAST_THREAD_INFO_METHOD: &str = "/threads/last";
+const GET_THREAD_MESSAGES_METHOD_PREFIX: &str = "/threads/";
+const GET_ALL_THREAD_INFOS_METHOD: &str = "/threads";
 
 async fn parse_request<T: DeserializeOwned>(
     request: HttpRequest<Body>,
@@ -64,6 +67,16 @@ async fn parse_response<T: DeserializeOwned>(
 fn parse_response_payload<T: DeserializeOwned>(response: &[u8]) -> Result<T, ProtocolError> {
     serde_json::from_slice(response)
         .map_err(|e| ProtocolError::new(ProtocolErrorType::BadRequest, Box::new(e)))
+}
+
+fn validate_method(
+    request: &HttpRequest<Body>,
+    expected_method: Method,
+) -> Result<(), ProtocolError> {
+    match request.method() == &expected_method {
+        true => Ok(()),
+        false => Err(generic_error(ProtocolErrorType::HttpMethodNotAllowed).into()),
+    }
 }
 
 fn serialize_to_http_request<T: Serialize>(
@@ -246,16 +259,34 @@ where
 #[async_trait::async_trait]
 impl RequestHttpConvert<CoreRequest> for CoreRequest {
     async fn from_http_request(request: HttpRequest<Body>) -> Result<Option<Self>, ProtocolError> {
-        let request = match request.uri().path() {
-            GENERATE_PATH => match request.method() == &Method::POST {
-                true => CoreRequest::Generation(parse_request(request).await?),
-                false => return Err(generic_error(ProtocolErrorType::HttpMethodNotAllowed).into()),
-            },
-            GENERATE_STREAM_PATH => match request.method() == &Method::POST {
-                true => CoreRequest::GenerationStream(parse_request(request).await?),
-                false => return Err(generic_error(ProtocolErrorType::HttpMethodNotAllowed).into()),
-            },
-            _ => return Ok(None),
+        let path = request.uri().path();
+        let request = match path {
+            GENERATE_PATH => {
+                validate_method(&request, Method::POST)?;
+                CoreRequest::Generation(parse_request(request).await?)
+            }
+            GENERATE_STREAM_PATH => {
+                validate_method(&request, Method::POST)?;
+                CoreRequest::GenerationStream(parse_request(request).await?)
+            }
+            GET_ALL_THREAD_INFOS_METHOD => {
+                validate_method(&request, Method::GET)?;
+                CoreRequest::GetAllThreadInfos
+            }
+            GET_LAST_THREAD_INFO_METHOD => {
+                validate_method(&request, Method::GET)?;
+                CoreRequest::GetLastThreadInfo
+            }
+            _ => {
+                if !path.starts_with(GET_THREAD_MESSAGES_METHOD_PREFIX)
+                    || request.method() != &Method::GET
+                    || path.split(&['/', '\\']).count() != 2
+                {
+                    return Ok(None);
+                }
+                let id = path.split(&['/', '\\']).nth(1).unwrap();
+                CoreRequest::GetThreadMessages { id: id.to_string() }
+            }
         };
         Ok(Some(request))
     }
@@ -267,6 +298,21 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
             }
             CoreRequest::GenerationStream(request) => {
                 serialize_to_http_request(base_url, GENERATE_STREAM_PATH, Method::POST, &request)?
+            }
+            CoreRequest::GetLastThreadInfo => serialize_to_http_request(
+                base_url,
+                GET_LAST_THREAD_INFO_METHOD,
+                Method::GET,
+                &Value::Null,
+            )?,
+            CoreRequest::GetAllThreadInfos => serialize_to_http_request(
+                base_url,
+                GET_ALL_THREAD_INFOS_METHOD,
+                Method::GET,
+                &Value::Null,
+            )?,
+            CoreRequest::GetThreadMessages { id } => {
+                serialize_to_http_request(base_url, GET_ALL_THREAD_INFOS_METHOD, Method::GET, &id)?
             }
             _ => return Ok(None),
         };
@@ -287,6 +333,15 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                 )),
                 CoreRequest::GenerationStream(_) => ServiceResponse::Multiple(
                     notification_sse_stream(original_request.clone(), response),
+                ),
+                CoreRequest::GetLastThreadInfo => ServiceResponse::Single(
+                    CoreResponse::GetLastThreadInfo(parse_response(response).await?),
+                ),
+                CoreRequest::GetAllThreadInfos => ServiceResponse::Single(
+                    CoreResponse::GetAllThreadInfos(parse_response(response).await?),
+                ),
+                CoreRequest::GetThreadMessages { .. } => ServiceResponse::Single(
+                    CoreResponse::GetThreadMessages(parse_response(response).await?),
                 ),
                 _ => return Ok(None),
             },
@@ -310,6 +365,15 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                 CoreResponse::GenerationStream(response) => {
                     ModalHttpResponse::Event(serde_json::to_value(response).unwrap())
                 }
+                CoreResponse::GetLastThreadInfo(response) => ModalHttpResponse::Single(
+                    serialize_to_http_response(&response, StatusCode::OK)?,
+                ),
+                CoreResponse::GetAllThreadInfos(response) => ModalHttpResponse::Single(
+                    serialize_to_http_response(&response, StatusCode::OK)?,
+                ),
+                CoreResponse::GetThreadMessages(response) => ModalHttpResponse::Single(
+                    serialize_to_http_response(&response, StatusCode::OK)?,
+                ),
                 _ => return Ok(None),
             },
             ServiceResponse::Multiple(stream) => {

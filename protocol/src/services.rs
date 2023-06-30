@@ -146,6 +146,18 @@ where
                             .boxed(),
                     )
                 }),
+                CoreRequest::GetLastThreadInfo => core
+                    .get_last_thread_info()
+                    .await
+                    .map(|i| ServiceResponse::Single(CoreResponse::GetLastThreadInfo(i))),
+                CoreRequest::GetAllThreadInfos => core
+                    .get_all_thread_infos()
+                    .await
+                    .map(|i| ServiceResponse::Single(CoreResponse::GetAllThreadInfos(i))),
+                CoreRequest::GetThreadMessages { id } => core
+                    .get_thread_messages(id)
+                    .await
+                    .map(|m| ServiceResponse::Single(CoreResponse::GetThreadMessages(m))),
                 CoreRequest::InitProject => core
                     .init_project()
                     .map(|_| ServiceResponse::Single(CoreResponse::InitProject)),
@@ -172,9 +184,10 @@ pub mod util {
 
     use super::{BoxedService, ServiceError};
 
-    // TODO: use this function in frontends to make building services
-    // more convenient
-    pub async fn build_service_from_config<Request, Response, Notification>(
+    pub const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
+    pub const LLMVM_CORE_CLI_ARGS: [&'static str; 2] = ["--log-to-file", "stdio-server"];
+
+    pub async fn build_service_from_config<Request, Response>(
         command_name: &str,
         command_arguments: &[&str],
         bin_path: Option<&str>,
@@ -192,11 +205,36 @@ pub mod util {
             + Send
             + Sync
             + 'static,
-        Notification: DeserializeOwned + std::fmt::Debug + Send + Sync + 'static,
     {
         Ok(match http_client_config {
             Some(config) => Box::new(HttpClient::new(config)?),
             None => Box::new(StdioClient::new(bin_path, command_name, command_arguments).await?),
         })
+    }
+
+    pub async fn build_core_service_from_config<Request, Response>(
+        bin_path: Option<&str>,
+        http_client_config: Option<HttpClientConfig>,
+    ) -> Result<BoxedService<Request, Response>, ServiceError>
+    where
+        Request: RequestHttpConvert<Request>
+            + RequestJsonRpcConvert<Request>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        Response: ResponseHttpConvert<Request, Response>
+            + ResponseJsonRpcConvert<Request, Response>
+            + Send
+            + Sync
+            + 'static,
+    {
+        build_service_from_config(
+            LLMVM_CORE_CLI_COMMAND,
+            &LLMVM_CORE_CLI_ARGS,
+            bin_path,
+            http_client_config,
+        )
+        .await
     }
 }

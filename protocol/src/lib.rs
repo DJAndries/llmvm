@@ -92,6 +92,12 @@ impl From<SerializableProtocolError> for ProtocolError {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ThreadInfo {
+    pub id: String,
+    pub modified: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
@@ -131,6 +137,12 @@ pub trait Core: Send + Sync {
         request: GenerationRequest,
     ) -> Result<NotificationStream<GenerationResponse>, ProtocolError>;
 
+    async fn get_last_thread_info(&self) -> Result<Option<ThreadInfo>, ProtocolError>;
+
+    async fn get_all_thread_infos(&self) -> Result<Vec<ThreadInfo>, ProtocolError>;
+
+    async fn get_thread_messages(&self, id: String) -> Result<Vec<Message>, ProtocolError>;
+
     fn init_project(&self) -> Result<(), ProtocolError>;
 }
 
@@ -148,7 +160,7 @@ pub struct BackendGenerationResponse {
     pub response: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationParameters {
     pub model: Option<String>,
     pub prompt_template_id: Option<String>,
@@ -158,10 +170,24 @@ pub struct GenerationParameters {
     pub prompt_parameters: Option<Value>,
 }
 
+impl Default for GenerationParameters {
+    fn default() -> Self {
+        Self {
+            model: None,
+            prompt_template_id: None,
+            custom_prompt_template: None,
+            max_tokens: Some(2048),
+            model_parameters: None,
+            prompt_parameters: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GenerationRequest {
     pub preset_id: Option<String>,
     pub parameters: Option<GenerationParameters>,
+    pub custom_prompt: Option<String>,
     pub existing_thread_id: Option<String>,
     pub save_thread: bool,
 }

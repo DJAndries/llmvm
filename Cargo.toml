@@ -6,6 +6,7 @@ members = [
   "./backends/outsource-cli",
   "./core",
   "./core-cli",
+  "./frontends/chat",
   "./frontends/codeassist",
   "./util"
 ]

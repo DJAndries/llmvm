@@ -465,9 +465,8 @@ impl CodeCompleteTask {
                 prompt_parameters: Some(prompt_params),
                 ..Default::default()
             }),
-            existing_thread_id: None,
-            save_thread: false,
             preset_id: Some(preset.clone()),
+            ..Default::default()
         };
         let request = match should_stream {
             true => CoreRequest::GenerationStream(request),

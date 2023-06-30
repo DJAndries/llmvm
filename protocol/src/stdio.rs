@@ -37,13 +37,16 @@ use crate::{
     services::{ServiceError, ServiceFuture, ServiceResponse},
     util::parse_from_value,
     BackendGenerationRequest, BackendGenerationResponse, GenerationRequest, GenerationResponse,
-    NotificationStream, ProtocolError, ProtocolErrorType, SerializableProtocolError,
-    COMMAND_TIMEOUT_SECS,
+    Message, NotificationStream, ProtocolError, ProtocolErrorType, SerializableProtocolError,
+    ThreadInfo, COMMAND_TIMEOUT_SECS,
 };
 
 const GENERATION_METHOD: &str = "generation";
 const GENERATION_STREAM_METHOD: &str = "generation_stream";
 const INIT_PROJECT_METHOD: &str = "init_project";
+const GET_LAST_THREAD_INFO_METHOD: &str = "get_last_thread_info";
+const GET_ALL_THREAD_INFOS_METHOD: &str = "get_all_thread_infos";
+const GET_THREAD_MESSAGES_METHOD: &str = "get_thread_messages";
 
 // TODO: move these to lib/services
 #[derive(Clone, Serialize, Deserialize)]
@@ -62,6 +65,9 @@ pub enum BackendResponse {
 pub enum CoreRequest {
     Generation(GenerationRequest),
     GenerationStream(GenerationRequest),
+    GetLastThreadInfo,
+    GetAllThreadInfos,
+    GetThreadMessages { id: String },
     InitProject,
 }
 
@@ -69,6 +75,9 @@ pub enum CoreRequest {
 pub enum CoreResponse {
     Generation(GenerationResponse),
     GenerationStream(GenerationResponse),
+    GetLastThreadInfo(Option<ThreadInfo>),
+    GetAllThreadInfos(Vec<ThreadInfo>),
+    GetThreadMessages(Vec<Message>),
     InitProject,
 }
 
@@ -97,6 +106,11 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
             GENERATION_METHOD => CoreRequest::Generation(value.parse_params()?),
             GENERATION_STREAM_METHOD => CoreRequest::GenerationStream(value.parse_params()?),
             INIT_PROJECT_METHOD => CoreRequest::InitProject,
+            GET_LAST_THREAD_INFO_METHOD => CoreRequest::GetLastThreadInfo,
+            GET_ALL_THREAD_INFOS_METHOD => CoreRequest::GetAllThreadInfos,
+            GET_THREAD_MESSAGES_METHOD => CoreRequest::GetThreadMessages {
+                id: value.parse_params()?,
+            },
             _ => return Ok(None),
         }))
     }
@@ -112,6 +126,12 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
                 Some(serde_json::to_value(request).unwrap()),
             ),
             CoreRequest::InitProject => (INIT_PROJECT_METHOD, None),
+            CoreRequest::GetLastThreadInfo => (GET_LAST_THREAD_INFO_METHOD, None),
+            CoreRequest::GetAllThreadInfos => (GET_ALL_THREAD_INFOS_METHOD, None),
+            CoreRequest::GetThreadMessages { id } => (
+                GET_THREAD_MESSAGES_METHOD,
+                Some(serde_json::to_value(id).unwrap()),
+            ),
         };
         JsonRpcRequest::new(method.to_string(), params)
     }
@@ -127,6 +147,15 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
                 let result = resp.get_result()?;
                 Ok(Some(match original_request {
                     CoreRequest::Generation(_) => Self::Generation(parse_from_value(result)?),
+                    CoreRequest::GetLastThreadInfo => {
+                        Self::GetLastThreadInfo(parse_from_value(result)?)
+                    }
+                    CoreRequest::GetAllThreadInfos => {
+                        Self::GetAllThreadInfos(parse_from_value(result)?)
+                    }
+                    CoreRequest::GetThreadMessages { .. } => {
+                        Self::GetThreadMessages(parse_from_value(result)?)
+                    }
                     CoreRequest::InitProject => Self::InitProject,
                     _ => return Ok(None),
                 }))
@@ -155,6 +184,9 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
                 is_notification = true;
                 serde_json::to_value(response).unwrap()
             }
+            CoreResponse::GetLastThreadInfo(response) => serde_json::to_value(response).unwrap(),
+            CoreResponse::GetAllThreadInfos(response) => serde_json::to_value(response).unwrap(),
+            CoreResponse::GetThreadMessages(response) => serde_json::to_value(response).unwrap(),
             CoreResponse::InitProject => Value::Null,
         });
         match is_notification {

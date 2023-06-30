@@ -7,7 +7,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use interceptor::LspInterceptor;
 use llmvm_protocol::{
-    services::{service_with_timeout, util::build_service_from_config, BoxedService},
+    services::{service_with_timeout, util::build_core_service_from_config, BoxedService},
     stdio::{CoreRequest, CoreResponse},
     HttpClientConfig,
 };
@@ -28,8 +28,6 @@ mod lsp;
 mod passthrough;
 mod service;
 
-const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
-const LLMVM_CORE_CLI_ARGS: [&'static str; 2] = ["--log-to-file", "stdio-server"];
 const CONFIG_FILENAME: &str = "codeassist.toml";
 const LOG_FILENAME: &str = "codeassist.log";
 const DEFAULT_PRESET: &str = "gpt-3.5-codegen";
@@ -97,9 +95,7 @@ async fn main() -> Result<()> {
     );
 
     let llmvm_core_service: Timeout<BoxedService<_, _>> = service_with_timeout(
-        build_service_from_config::<CoreRequest, CoreResponse, ()>(
-            LLMVM_CORE_CLI_COMMAND,
-            &LLMVM_CORE_CLI_ARGS,
+        build_core_service_from_config::<CoreRequest, CoreResponse>(
             config.bin_path.as_ref().map(|b| b.as_ref()),
             config.http_core.take(),
         )

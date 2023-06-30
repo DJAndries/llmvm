@@ -99,14 +99,13 @@ async fn main() -> std::io::Result<()> {
                 preset_id: None,
                 parameters: Some(GenerationParameters {
                     model: Some(args.model),
-                    prompt_template_id: None,
                     custom_prompt_template: Some(args.prompt),
                     max_tokens: Some(args.max_tokens),
-                    model_parameters: None,
-                    prompt_parameters: None,
+                    ..Default::default()
                 }),
                 existing_thread_id: args.existing_thread_id,
                 save_thread: args.save_thread,
+                ..Default::default()
             };
             match args.stream {
                 false => match core.generate(request).await {
