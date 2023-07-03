@@ -7,9 +7,9 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use interceptor::LspInterceptor;
 use llmvm_protocol::{
-    services::{service_with_timeout, util::build_core_service_from_config, BoxedService},
-    stdio::{CoreRequest, CoreResponse},
-    HttpClientConfig,
+    http::client::HttpClientConfig,
+    service::{util::build_core_service_from_config, BoxedService},
+    stdio::client::StdioClientConfig,
 };
 use llmvm_util::config::load_config;
 use llmvm_util::logging::setup_subscriber;
@@ -19,7 +19,6 @@ use tokio::{
     io::{stdin, stdout},
     process::Command,
 };
-use tower::timeout::Timeout;
 
 mod complete;
 mod content;
@@ -36,8 +35,8 @@ const DEFAULT_PRESET: &str = "gpt-3.5-codegen";
 #[serde(default)]
 pub struct CodeAssistConfig {
     tracing_directive: Option<String>,
-    bin_path: Option<String>,
 
+    stdio_core: Option<StdioClientConfig>,
     http_core: Option<HttpClientConfig>,
 
     prefer_insert_in_place: bool,
@@ -50,7 +49,7 @@ impl Default for CodeAssistConfig {
     fn default() -> Self {
         Self {
             tracing_directive: None,
-            bin_path: None,
+            stdio_core: None,
             http_core: None,
             prefer_insert_in_place: false,
             default_preset: DEFAULT_PRESET.to_string(),
@@ -94,14 +93,10 @@ async fn main() -> Result<()> {
         child.stdout.take().unwrap(),
     );
 
-    let llmvm_core_service: Timeout<BoxedService<_, _>> = service_with_timeout(
-        build_core_service_from_config::<CoreRequest, CoreResponse>(
-            config.bin_path.as_ref().map(|b| b.as_ref()),
-            config.http_core.take(),
-        )
-        .await
-        .map_err(|e| anyhow!(e))?,
-    );
+    let llmvm_core_service: BoxedService<_, _> =
+        build_core_service_from_config(config.stdio_core.take(), config.http_core.take())
+            .await
+            .map_err(|e| anyhow!(e))?;
 
     let mut interceptor = LspInterceptor::new(
         Arc::new(config),

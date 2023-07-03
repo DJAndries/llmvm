@@ -1,21 +1,20 @@
-mod util;
-
 use async_stream::stream;
-use futures::stream::{once, StreamExt};
+use futures::stream::StreamExt;
 use handlebars::{
     no_escape, Context, Handlebars, Helper, HelperDef, HelperResult, Output, RenderContext,
     RenderError, Renderable, StringOutput,
 };
-use llmvm_protocol::http::HttpClient;
-use llmvm_protocol::services::{service_with_timeout, BoxedService, ServiceResponse};
-use llmvm_protocol::stdio::{BackendRequest, BackendResponse, StdioClient};
-use llmvm_protocol::tower::timeout::Timeout;
+use llmvm_protocol::error::{ProtocolErrorType, SerializableProtocolError};
+use llmvm_protocol::http::client::{HttpClient, HttpClientConfig};
+use llmvm_protocol::service::{
+    BackendRequest, BackendResponse, BoxedService, NotificationStream, ServiceResponse,
+};
+use llmvm_protocol::stdio::client::{StdioClient, StdioClientConfig};
 use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, Core, GenerationParameters,
-    GenerationRequest, GenerationResponse, HttpClientConfig, HttpServerConfig, Message,
-    MessageRole, ModelDescription, NotificationStream, ProtocolError, ProtocolErrorType,
-    SerializableProtocolError, ThreadInfo,
+    GenerationRequest, GenerationResponse, Message, MessageRole, ModelDescription, ProtocolError,
+    ThreadInfo,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use rand::distributions::Alphanumeric;
@@ -27,7 +26,6 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use std::fs::create_dir;
-use std::pin::Pin;
 use std::time::Duration;
 use std::{
     cell::RefCell,
@@ -38,9 +36,8 @@ use std::{
 };
 use thiserror::Error;
 use tokio::fs;
-use tokio::sync::{oneshot, Mutex, MutexGuard};
+use tokio::sync::Mutex;
 use tracing::{debug, info};
-use util::current_timestamp_secs;
 
 const BACKEND_COMMAND_PREFIX: &str = "llmvm-";
 const BACKEND_COMMAND_SUFFIX: &str = "-cli";
@@ -384,15 +381,14 @@ pub async fn get_thread_messages(thread_id: &str) -> Result<Vec<Message>> {
 #[derive(Deserialize)]
 pub struct LLMVMCoreConfig {
     pub tracing_directive: Option<String>,
-    pub bin_path: Option<String>,
-    pub http_server: Option<HttpServerConfig>,
+    pub stdio_client: Option<StdioClientConfig>,
     pub thread_ttl_secs: Option<u64>,
 
     pub http_backends: HashMap<String, HttpClientConfig>,
 }
 
 pub struct LLMVMCore {
-    clients: Mutex<HashMap<String, Timeout<BoxedService<BackendRequest, BackendResponse>>>>,
+    clients: Mutex<HashMap<String, BoxedService<BackendRequest, BackendResponse>>>,
     config: LLMVMCoreConfig,
 }
 
@@ -400,15 +396,14 @@ impl LLMVMCore {
     pub async fn new(mut config: LLMVMCoreConfig) -> Result<Self> {
         clean_old_threads(config.thread_ttl_secs.unwrap_or(DEFAULT_TTL_SECS)).await?;
 
-        let mut clients = HashMap::new();
+        let mut clients: HashMap<String, BoxedService<BackendRequest, BackendResponse>> =
+            HashMap::new();
 
         for (name, config) in config.http_backends.drain() {
             debug!("loading {} http backend", name);
             clients.insert(
                 name,
-                service_with_timeout(Box::new(
-                    HttpClient::new(config).map_err(|_| CoreError::HttpServiceCreate)?,
-                )),
+                Box::new(HttpClient::new(config).map_err(|_| CoreError::HttpServiceCreate)?),
             );
         }
 
@@ -420,27 +415,30 @@ impl LLMVMCore {
 
     async fn get_client<'a>(
         &self,
-        clients_guard: &'a mut HashMap<
-            String,
-            Timeout<BoxedService<BackendRequest, BackendResponse>>,
-        >,
+        clients_guard: &'a mut HashMap<String, BoxedService<BackendRequest, BackendResponse>>,
         model_description: &ModelDescription,
-    ) -> Result<&'a mut Timeout<BoxedService<BackendRequest, BackendResponse>>> {
+    ) -> Result<&'a mut BoxedService<BackendRequest, BackendResponse>> {
         let command = format!(
             "{}{}{}",
             BACKEND_COMMAND_PREFIX, model_description.backend, BACKEND_COMMAND_SUFFIX
         );
         if !clients_guard.contains_key(&model_description.backend) {
-            let bin_path = self.config.bin_path.as_ref().map(|v| v.as_str());
-            debug!("starting backend {command} in {bin_path:?}");
+            debug!(
+                "starting backend {command} in {:?}",
+                self.config.stdio_client.as_ref().map(|c| &c.bin_path)
+            );
             let backend = model_description.backend.as_str();
             clients_guard.insert(
                 backend.to_string(),
-                service_with_timeout(Box::new(
-                    StdioClient::new(bin_path, &command, &["--log-to-file"])
-                        .await
-                        .map_err(|e| CoreError::StdioBackendStart(e))?,
-                )),
+                Box::new(
+                    StdioClient::new(
+                        &command,
+                        &["--log-to-file"],
+                        self.config.stdio_client.clone().unwrap_or_default(),
+                    )
+                    .await
+                    .map_err(|e| CoreError::StdioBackendStart(e))?,
+                ),
             );
         }
         Ok(clients_guard.get_mut(&model_description.backend).unwrap())

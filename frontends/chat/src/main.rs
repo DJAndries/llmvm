@@ -8,19 +8,20 @@ use anyhow::{anyhow, Result};
 use clap::Parser;
 use futures::StreamExt;
 use llmvm_protocol::{
-    services::{
-        service_with_timeout, util::build_core_service_from_config, BoxedService, ServiceResponse,
+    http::client::HttpClientConfig,
+    service::{
+        util::build_core_service_from_config, BoxedService, CoreRequest, CoreResponse,
+        ServiceResponse,
     },
-    stdio::{CoreRequest, CoreResponse},
-    tower::{timeout::Timeout, Service},
-    GenerationParameters, GenerationRequest, HttpClientConfig, Message, MessageRole,
+    stdio::client::StdioClientConfig,
+    GenerationParameters, GenerationRequest, Message, MessageRole,
 };
 use llmvm_util::config::load_config;
 use rustyline::{error::ReadlineError, Config as RlConfig, DefaultEditor as RlEditor, EditMode};
 use serde::Deserialize;
 use serde_json::json;
 
-type CoreService = Timeout<BoxedService<CoreRequest, CoreResponse>>;
+type CoreService = BoxedService<CoreRequest, CoreResponse>;
 
 const CONFIG_FILENAME: &str = "chat.toml";
 const MESSAGE_PROMPT_PARAM: &str = "user_message";
@@ -56,6 +57,7 @@ struct Cli {
 pub struct ChatConfig {
     bin_path: Option<String>,
 
+    stdio_core: Option<StdioClientConfig>,
     http_core: Option<HttpClientConfig>,
 }
 
@@ -78,14 +80,10 @@ impl ChatApp {
             exit(1);
         });
 
-        let llmvm_core_service: CoreService = service_with_timeout(
-            build_core_service_from_config::<CoreRequest, CoreResponse>(
-                config.bin_path.as_ref().map(|b| b.as_ref()),
-                config.http_core.take(),
-            )
-            .await
-            .map_err(|e| anyhow!(e))?,
-        );
+        let llmvm_core_service: CoreService =
+            build_core_service_from_config(config.stdio_core.take(), config.http_core.take())
+                .await
+                .map_err(|e| anyhow!(e))?;
 
         let rl = RlEditor::with_config(
             RlConfig::builder()

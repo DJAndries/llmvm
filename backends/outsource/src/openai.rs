@@ -2,10 +2,9 @@ use std::collections::VecDeque;
 
 use async_stream::stream;
 use futures::StreamExt;
-use llmvm_protocol::services::ServiceError;
+use llmvm_protocol::service::{NotificationStream, ServiceError};
 use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, Message, MessageRole, ModelDescription,
-    NotificationStream, ProtocolError,
 };
 use reqwest::{Client, Response as HttpResponse, Url};
 use serde::Deserialize;

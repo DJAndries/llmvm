@@ -1,19 +1,53 @@
+use serde::{Deserialize, Serialize};
+pub use sweetlinks::service::*;
+
 use std::{
     error::Error,
     future::Future,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    time::Duration,
 };
 
 use futures::stream::StreamExt;
-use tower::{timeout::Timeout, Service};
+use sweetlinks::tower::Service;
 
 use crate::{
-    stdio::{BackendRequest, BackendResponse, CoreRequest, CoreResponse},
-    Backend, Core, NotificationStream, COMMAND_TIMEOUT_SECS,
+    Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
+    GenerationResponse, Message, ThreadInfo,
 };
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum BackendRequest {
+    Generation(BackendGenerationRequest),
+    GenerationStream(BackendGenerationRequest),
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum BackendResponse {
+    Generation(BackendGenerationResponse),
+    GenerationStream(BackendGenerationResponse),
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum CoreRequest {
+    Generation(GenerationRequest),
+    GenerationStream(GenerationRequest),
+    GetLastThreadInfo,
+    GetAllThreadInfos,
+    GetThreadMessages { id: String },
+    InitProject,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum CoreResponse {
+    Generation(GenerationResponse),
+    GenerationStream(GenerationResponse),
+    GetLastThreadInfo(Option<ThreadInfo>),
+    GetAllThreadInfos(Vec<ThreadInfo>),
+    GetThreadMessages(Vec<Message>),
+    InitProject,
+}
 
 pub struct BackendService<B>
 where
@@ -67,11 +101,6 @@ where
     pub fn new(core: Arc<C>) -> Self {
         Self { core }
     }
-}
-
-pub enum ServiceResponse<Response> {
-    Single(Response),
-    Multiple(NotificationStream<Response>),
 }
 
 pub type ServiceError = Box<dyn Error + Send + Sync + 'static>;
@@ -166,73 +195,27 @@ where
     }
 }
 
-pub fn service_with_timeout<Request, Response>(
-    service: BoxedService<Request, Response>,
-) -> Timeout<BoxedService<Request, Response>> {
-    Timeout::new(service, Duration::from_secs(COMMAND_TIMEOUT_SECS))
-}
-
-#[cfg(all(feature = "http-client", feature = "stdio"))]
+#[cfg(all(feature = "http-client", feature = "stdio-client"))]
 pub mod util {
-    use serde::de::DeserializeOwned;
-
-    use crate::{
-        http::{HttpClient, RequestHttpConvert, ResponseHttpConvert},
-        stdio::{RequestJsonRpcConvert, ResponseJsonRpcConvert, StdioClient},
-        HttpClientConfig,
+    use sweetlinks::{
+        http::client::HttpClientConfig,
+        service::{util::build_service_from_config, BoxedService, ServiceError},
+        stdio::client::StdioClientConfig,
     };
 
-    use super::{BoxedService, ServiceError};
+    use super::{CoreRequest, CoreResponse};
 
     pub const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
     pub const LLMVM_CORE_CLI_ARGS: [&'static str; 2] = ["--log-to-file", "stdio-server"];
 
-    pub async fn build_service_from_config<Request, Response>(
-        command_name: &str,
-        command_arguments: &[&str],
-        bin_path: Option<&str>,
+    pub async fn build_core_service_from_config(
+        stdio_client_config: Option<StdioClientConfig>,
         http_client_config: Option<HttpClientConfig>,
-    ) -> Result<BoxedService<Request, Response>, ServiceError>
-    where
-        Request: RequestHttpConvert<Request>
-            + RequestJsonRpcConvert<Request>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-        Response: ResponseHttpConvert<Request, Response>
-            + ResponseJsonRpcConvert<Request, Response>
-            + Send
-            + Sync
-            + 'static,
-    {
-        Ok(match http_client_config {
-            Some(config) => Box::new(HttpClient::new(config)?),
-            None => Box::new(StdioClient::new(bin_path, command_name, command_arguments).await?),
-        })
-    }
-
-    pub async fn build_core_service_from_config<Request, Response>(
-        bin_path: Option<&str>,
-        http_client_config: Option<HttpClientConfig>,
-    ) -> Result<BoxedService<Request, Response>, ServiceError>
-    where
-        Request: RequestHttpConvert<Request>
-            + RequestJsonRpcConvert<Request>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-        Response: ResponseHttpConvert<Request, Response>
-            + ResponseJsonRpcConvert<Request, Response>
-            + Send
-            + Sync
-            + 'static,
-    {
-        build_service_from_config(
+    ) -> Result<BoxedService<CoreRequest, CoreResponse>, ServiceError> {
+        build_service_from_config::<CoreRequest, CoreResponse>(
             LLMVM_CORE_CLI_COMMAND,
             &LLMVM_CORE_CLI_ARGS,
-            bin_path,
+            stdio_client_config,
             http_client_config,
         )
         .await

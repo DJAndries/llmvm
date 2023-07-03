@@ -6,8 +6,8 @@ use std::str::FromStr;
 
 use futures::{stream::once, StreamExt};
 use llmvm_protocol::{
-    async_trait, Backend, BackendGenerationRequest, BackendGenerationResponse, ModelDescription,
-    NotificationStream, ProtocolError, ProtocolErrorType,
+    async_trait, error::ProtocolErrorType, service::NotificationStream, Backend,
+    BackendGenerationRequest, BackendGenerationResponse, ModelDescription, ProtocolError,
 };
 use reqwest::StatusCode;
 use serde::Deserialize;

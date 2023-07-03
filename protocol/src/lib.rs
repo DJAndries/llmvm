@@ -1,96 +1,21 @@
-#[cfg(feature = "tower")]
-pub mod services;
-use futures::Stream;
-#[cfg(feature = "tower")]
-pub use tower;
-
-#[cfg(feature = "jsonrpc")]
-pub mod jsonrpc;
-#[cfg(feature = "stdio")]
-pub mod stdio;
-
 #[cfg(any(feature = "http-client", feature = "http-server"))]
 pub mod http;
-
-pub mod util;
+pub mod service;
+#[cfg(any(feature = "stdio-client", feature = "stdio-server"))]
+pub mod stdio;
 
 pub use async_trait::async_trait;
+pub use sweetlinks::*;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
-    collections::HashSet,
-    error::Error,
     fmt::{Display, Formatter},
-    pin::Pin,
     str::FromStr,
 };
+use sweetlinks::service::NotificationStream;
 
-pub const COMMAND_TIMEOUT_SECS: u64 = 900;
 pub const CHAT_MODEL_PROVIDER_SUFFIX: &str = "-chat";
-
-pub type NotificationStream<Response> =
-    Pin<Box<dyn Stream<Item = Result<Response, ProtocolError>> + Send>>;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ProtocolErrorType {
-    NotFound,
-    HttpMethodNotAllowed,
-    BadRequest,
-    Unauthorized,
-    Internal,
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{error}")]
-pub struct ProtocolError {
-    pub error_type: ProtocolErrorType,
-    #[source]
-    pub error: Box<dyn Error + Send + Sync + 'static>,
-}
-
-impl ProtocolError {
-    pub fn new(
-        error_type: ProtocolErrorType,
-        error: Box<dyn Error + Send + Sync + 'static>,
-    ) -> Self {
-        Self { error_type, error }
-    }
-}
-
-impl From<Box<dyn Error + Send + Sync + 'static>> for ProtocolError {
-    fn from(error: Box<dyn Error + Send + Sync + 'static>) -> Self {
-        match error.downcast::<Self>() {
-            Ok(e) => *e,
-            Err(e) => ProtocolError::new(ProtocolErrorType::Internal, e),
-        }
-    }
-}
-
-#[derive(Clone, Debug, thiserror::Error, Serialize, Deserialize)]
-#[error("{description}")]
-pub struct SerializableProtocolError {
-    pub error_type: ProtocolErrorType,
-    pub description: String,
-}
-
-impl From<ProtocolError> for SerializableProtocolError {
-    fn from(value: ProtocolError) -> Self {
-        Self {
-            error_type: value.error_type,
-            description: value.error.to_string(),
-        }
-    }
-}
-
-impl From<SerializableProtocolError> for ProtocolError {
-    fn from(value: SerializableProtocolError) -> Self {
-        Self {
-            error_type: value.error_type.clone(),
-            error: Box::new(value),
-        }
-    }
-}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ThreadInfo {
@@ -232,29 +157,4 @@ impl Display for ModelDescription {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}/{}", self.backend, self.provider, self.model_name)
     }
-}
-
-// TODO: move back into http::config module which will be avail without features
-// TODO: put server and client in separate modules, get rid of cfg for each block
-#[derive(Deserialize)]
-#[serde(default)]
-pub struct HttpServerConfig {
-    pub port: u16,
-    pub api_keys: HashSet<String>,
-}
-
-impl Default for HttpServerConfig {
-    fn default() -> Self {
-        Self {
-            port: 8080,
-            api_keys: HashSet::new(),
-        }
-    }
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-pub struct HttpClientConfig {
-    pub base_url: String,
-    pub api_key: Option<String>,
 }

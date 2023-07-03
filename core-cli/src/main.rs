@@ -1,15 +1,16 @@
 use std::io::{stdout, Write};
-use std::pin::Pin;
 use std::{process::exit, sync::Arc};
 
 use clap::{arg, command, Args, Parser, Subcommand};
 use futures::stream::StreamExt;
 use llmvm_core::{LLMVMCore, LLMVMCoreConfig};
-use llmvm_protocol::http::HttpServer;
-use llmvm_protocol::services::CoreService;
-use llmvm_protocol::{stdio::StdioServer, Core, GenerationParameters, GenerationRequest};
+use llmvm_protocol::http::server::{HttpServer, HttpServerConfig};
+use llmvm_protocol::service::CoreService;
+use llmvm_protocol::stdio::server::{StdioServer, StdioServerConfig};
+use llmvm_protocol::{Core, GenerationParameters, GenerationRequest};
 use llmvm_util::config::load_config;
 use llmvm_util::logging::setup_subscriber;
+use serde::Deserialize;
 
 const CONFIG_FILENAME: &str = "core.toml";
 const LOG_FILENAME: &str = "core.log";
@@ -22,6 +23,16 @@ struct Cli {
 
     #[arg(long)]
     log_to_file: bool,
+}
+
+#[derive(Deserialize)]
+struct CliConfigContent {
+    tracing_directive: Option<String>,
+    stdio_server: Option<StdioServerConfig>,
+    http_server: Option<HttpServerConfig>,
+
+    #[serde(flatten)]
+    lib_config: LLMVMCoreConfig,
 }
 
 #[derive(Args, Clone)]
@@ -64,7 +75,7 @@ pub struct GenerateArgs {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::io::Result<()> {
-    let mut config: LLMVMCoreConfig = match load_config(CONFIG_FILENAME) {
+    let config: CliConfigContent = match load_config(CONFIG_FILENAME) {
         Ok(config) => config,
         Err(e) => {
             eprintln!("failed to load config: {}", e);
@@ -83,9 +94,7 @@ async fn main() -> std::io::Result<()> {
         },
     );
 
-    let mut http_config = config.http_server.take();
-
-    let core = Arc::new(match LLMVMCore::new(config).await {
+    let core = Arc::new(match LLMVMCore::new(config.lib_config).await {
         Ok(core) => core,
         Err(e) => {
             eprintln!("failed to init core: {}", e);
@@ -148,12 +157,15 @@ async fn main() -> std::io::Result<()> {
             }
         }
         CoreCommand::StdioServer => {
-            StdioServer::<_, _, _>::new(CoreService::new(core))
-                .run()
-                .await?;
+            StdioServer::<_, _, _>::new(
+                CoreService::new(core),
+                config.stdio_server.unwrap_or_default(),
+            )
+            .run()
+            .await?;
         }
         CoreCommand::HttpServer(args) => {
-            let mut config = http_config.take().unwrap_or_default();
+            let mut config = config.http_server.unwrap_or_default();
             if let Some(port) = args.port {
                 config.port = port;
             }

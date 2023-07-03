@@ -6,8 +6,9 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
 use llmvm_protocol::{
+    error::ProtocolErrorType,
     jsonrpc::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse},
-    ProtocolError, ProtocolErrorType,
+    ProtocolError,
 };
 
 pub const CONTENT_LENGTH_HEADER: &str = "Content-Length";

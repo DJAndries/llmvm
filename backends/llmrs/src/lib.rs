@@ -1,22 +1,19 @@
 mod model;
 
-use std::{collections::HashMap, ops::Deref, str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
 
 use futures::StreamExt;
 use llm::{InferenceSessionConfig, LoadError, UnsupportedModelArchitecture};
-use llmvm_protocol::{
-    async_trait, Backend, BackendGenerationRequest, BackendGenerationResponse, ModelDescription,
-    NotificationStream, ProtocolError, ProtocolErrorType,
-};
 
+use llmvm_protocol::{
+    async_trait, error::ProtocolErrorType, service::NotificationStream, Backend,
+    BackendGenerationRequest, BackendGenerationResponse, ModelDescription, ProtocolError,
+};
 use model::LlmrsModel;
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::{
-    sync::{
-        watch::{self, Ref},
-        Notify, OnceCell, RwLock, RwLockReadGuard,
-    },
+    sync::{Notify, OnceCell, RwLock},
     task::JoinHandle,
 };
 use tracing::error;

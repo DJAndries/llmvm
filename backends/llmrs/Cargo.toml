@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 futures = "0.3"
 llm = { git = "https://github.com/rustformers/llm", rev = "7927d0d9cb366dc60dfa8c3400825f43bd1a1654" }
-llmvm-protocol = { path = "../../protocol", features = ["stdio"] }
+llmvm-protocol = { path = "../../protocol" }
 llmvm-util = { path = "../../util" }
 thiserror = "1.0"
 rand = "0.8"

@@ -3,10 +3,12 @@ use std::process::exit;
 use std::sync::Arc;
 
 use clap::{Args, Subcommand};
-use llmvm_protocol::http::HttpServer;
-use llmvm_protocol::services::BackendService;
-use llmvm_protocol::stdio::StdioServer;
-use llmvm_protocol::{Backend, BackendGenerationRequest, HttpServerConfig};
+use llmvm_protocol::{
+    http::server::{HttpServer, HttpServerConfig},
+    service::BackendService,
+    stdio::server::{StdioServer, StdioServerConfig},
+    Backend, BackendGenerationRequest,
+};
 use tracing::error;
 
 #[derive(Args, Clone)]
@@ -47,6 +49,7 @@ pub enum BackendCommand {
 pub async fn run_backend<B: Backend + 'static>(
     command: Option<BackendCommand>,
     backend: Arc<B>,
+    stdio_config: Option<StdioServerConfig>,
     http_config: Option<HttpServerConfig>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     // TODO: require a command to be specified, create --stdio switch
@@ -84,7 +87,8 @@ pub async fn run_backend<B: Backend + 'static>(
             }
         },
         None => {
-            StdioServer::<_, _, _>::new(BackendService::new(backend))
+            let config = stdio_config.unwrap_or_default();
+            StdioServer::new(BackendService::new(backend), config)
                 .run()
                 .await?;
         }

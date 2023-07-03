@@ -5,22 +5,14 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1"
-async-stream = "0.3"
-futures = { version = "0.3" }
+futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-hyper = { version = "0.14", optional = true, features = ["http1", "stream"] }
-hyper-rustls = { version = "0.24", optional = true }
-thiserror = "1.0"
-tower = { version = "0.4", optional = true, features = ["timeout"] }
-tokio = { version = "1.27", optional = true, features = ["io-std", "io-util", "process", "rt", "sync"] }
-tokio-stream = "0.1"
-tracing = "0.1"
+sweetlinks = { version = "0.1", path = "../../sweetlinks" }
+tokio = { version = "1.27", optional = true, features = ["rt"] }
 
 [features]
-tower = ["dep:tower"]
-jsonrpc = []
-stdio = ["tower", "dep:tokio", "jsonrpc"]
-http-client = ["tower", "dep:hyper", "hyper?/client", "dep:hyper-rustls"]
-http-server = ["tower", "dep:hyper", "hyper?/server", "hyper?/tcp"]
-
+http-client = ["sweetlinks/http-client"]
+http-server = ["sweetlinks/http-server"]
+stdio-client = ["sweetlinks/stdio-client"]
+stdio-server = ["sweetlinks/stdio-server"]

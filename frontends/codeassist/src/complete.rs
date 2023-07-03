@@ -9,10 +9,10 @@ use std::{
 use anyhow::{anyhow, bail, Result};
 use futures::{future::join_all, stream::select_all, Stream, StreamExt};
 use llmvm_protocol::{
-    services::{BoxedService, ServiceFuture, ServiceResponse},
-    stdio::{CoreRequest, CoreResponse},
-    tower::timeout::future::ResponseFuture,
-    GenerationParameters, GenerationRequest, GenerationResponse, NotificationStream,
+    service::{
+        BoxedService, CoreRequest, CoreResponse, NotificationStream, ServiceFuture, ServiceResponse,
+    },
+    GenerationParameters, GenerationRequest, GenerationResponse,
 };
 use lsp_types::{
     notification::Progress,
@@ -29,7 +29,7 @@ use lsp_types::{
 use serde::Serialize;
 use serde_json::Value;
 use tokio::{sync::Mutex, task::JoinError};
-use tower::{timeout::Timeout, Service};
+use tower::Service;
 use tracing::{debug, error};
 
 use crate::{
@@ -143,7 +143,7 @@ impl From<FoldingRange> for SimpleFoldingRange {
 pub struct CodeCompleteTask {
     config: Arc<CodeAssistConfig>,
 
-    llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse>>>>,
+    llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
     passthrough_service: LspMessageService,
     root_uri: Option<Url>,
     supports_semantic_tokens: bool,
@@ -162,7 +162,7 @@ pub struct CodeCompleteTask {
 impl CodeCompleteTask {
     pub fn new(
         config: Arc<CodeAssistConfig>,
-        llmvm_core_service: Arc<Mutex<Timeout<BoxedService<CoreRequest, CoreResponse>>>>,
+        llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
         passthrough_service: LspMessageService,
         server_capabilities: Option<&ServerCapabilities>,
         root_uri: Option<Url>,
@@ -459,7 +459,7 @@ impl CodeCompleteTask {
         preset: String,
         prompt_params: Value,
         should_stream: bool,
-    ) -> ResponseFuture<ServiceFuture<ServiceResponse<CoreResponse>>> {
+    ) -> ServiceFuture<ServiceResponse<CoreResponse>> {
         let request = GenerationRequest {
             parameters: Some(GenerationParameters {
                 prompt_parameters: Some(prompt_params),
