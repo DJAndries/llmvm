@@ -685,7 +685,9 @@ impl Core for LLMVMCore {
                             }
                             _ => yield Err(CoreError::UnexpectedServiceResponse.into())
                         },
-                        Err(e) => yield Err(e)
+                        Err(e) => {
+                            yield Err(e);
+                        }
                     }
                 }
                 if let Ok(thread_id) = maybe_save_thread_messages_and_get_thread_id(&request, full_response, thread_messages_to_save).await {

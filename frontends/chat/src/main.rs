@@ -83,7 +83,7 @@ impl ChatApp {
         let llmvm_core_service: CoreService =
             build_core_service_from_config(config.stdio_core.take(), config.http_core.take())
                 .await
-                .map_err(|e| anyhow!(e))?;
+                .map_err(|e| anyhow!(e).context("failed to start core cli"))?;
 
         let rl = RlEditor::with_config(
             RlConfig::builder()

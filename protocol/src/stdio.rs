@@ -5,7 +5,6 @@ use sweetlinks::{
     error::SerializableProtocolError,
     jsonrpc::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse},
     util::parse_from_value,
-    ProtocolError,
 };
 
 use crate::service::{BackendRequest, BackendResponse, CoreRequest, CoreResponse};
@@ -92,12 +91,9 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
         }
     }
 
-    fn into_jsonrpc_message(
-        result: Result<CoreResponse, ProtocolError>,
-        id: Value,
-    ) -> JsonRpcMessage {
+    fn into_jsonrpc_message(response: CoreResponse, id: Value) -> JsonRpcMessage {
         let mut is_notification = false;
-        let result = result.map(|response| match response {
+        let result = Ok(match response {
             CoreResponse::Generation(response) => serde_json::to_value(response).unwrap(),
             CoreResponse::GenerationStream(response) => {
                 is_notification = true;
@@ -167,20 +163,15 @@ impl ResponseJsonRpcConvert<BackendRequest, BackendResponse> for BackendResponse
         }))
     }
 
-    fn into_jsonrpc_message(
-        result: Result<BackendResponse, ProtocolError>,
-        id: Value,
-    ) -> JsonRpcMessage {
+    fn into_jsonrpc_message(response: BackendResponse, id: Value) -> JsonRpcMessage {
         let mut is_notification = false;
-        let result = result
-            .map(|response| match response {
-                BackendResponse::Generation(response) => serde_json::to_value(response).unwrap(),
-                BackendResponse::GenerationStream(response) => {
-                    is_notification = true;
-                    serde_json::to_value(response).unwrap()
-                }
-            })
-            .map_err(|e| e.into());
+        let result = Ok(match response {
+            BackendResponse::Generation(response) => serde_json::to_value(response).unwrap(),
+            BackendResponse::GenerationStream(response) => {
+                is_notification = true;
+                serde_json::to_value(response).unwrap()
+            }
+        });
         match is_notification {
             true => JsonRpcNotification::new_with_result_params(result, id.to_string()).into(),
             false => JsonRpcResponse::new(result, id).into(),

@@ -28,7 +28,7 @@ const SSE_DONE_MESSAGE: &str = "[DONE]";
 
 #[derive(Deserialize)]
 struct CompletionChoice {
-    text: String,
+    text: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -58,7 +58,7 @@ struct ChatCompletionStreamChoice {
 
 #[derive(Deserialize)]
 struct ChatCompletionChoiceMessage {
-    content: String,
+    content: Option<String>,
 }
 
 async fn send_generate_request(
@@ -126,7 +126,8 @@ pub async fn generate(
         let mut body: CompletionResponse = response.json().await?;
         let choice = body.choices.pop().ok_or(OutsourceError::NoTextInResponse)?;
         choice.text
-    };
+    }
+    .unwrap_or_default();
 
     Ok(BackendGenerationResponse { response })
 }
@@ -149,7 +150,8 @@ fn extract_response_from_stream_event(
             .pop()
             .ok_or(OutsourceError::NoTextInResponse)?;
         choice.text
-    };
+    }
+    .unwrap_or_default();
     Ok(BackendGenerationResponse { response })
 }
 
