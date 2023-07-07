@@ -45,6 +45,17 @@ pub fn get_project_dir() -> Option<PathBuf> {
     current_dir().ok().map(|p| p.join(PROJECT_DIR_NAME))
 }
 
+fn get_home_file_path(dir_type: DirType, filename: &str) -> Option<PathBuf> {
+    get_home_dirs().map(|p| {
+        let subdir = match dir_type {
+            DirType::Config => p.config_dir().into(),
+            _ => p.data_dir().join(dir_type.to_string()),
+        };
+        create_dir_all(&subdir).ok();
+        subdir.join(filename)
+    })
+}
+
 pub fn get_file_path(dir_type: DirType, filename: &str, will_create: bool) -> Option<PathBuf> {
     // Check for project file path, if it exists or if creating new file
     let project_dir = get_project_dir();
@@ -59,14 +70,7 @@ pub fn get_file_path(dir_type: DirType, filename: &str, will_create: bool) -> Op
         }
     }
     // Return user home file path
-    get_home_dirs().map(|p| {
-        let subdir = match dir_type {
-            DirType::Config => p.config_dir().into(),
-            _ => p.data_dir().join(dir_type.to_string()),
-        };
-        create_dir_all(&subdir).ok();
-        subdir.join(filename)
-    })
+    get_home_file_path(dir_type, filename)
 }
 
 #[cfg(feature = "logging")]
@@ -114,15 +118,34 @@ pub mod logging {
 #[cfg(feature = "config")]
 pub mod config {
     use config::{Config, ConfigError, Environment, File, FileFormat};
+    use multilink::ConfigExampleSnippet;
     use serde::de::DeserializeOwned;
+    use std::{fs, io::Write};
 
-    use crate::DirType;
+    use crate::{get_home_file_path, DirType};
 
     use super::get_file_path;
 
-    pub fn load_config<T: DeserializeOwned>(config_filename: &str) -> Result<T, ConfigError> {
+    fn maybe_save_example_config<T: ConfigExampleSnippet>(config_filename: &str) {
+        let home_config_path = get_home_file_path(DirType::Config, config_filename)
+            .expect("should be able to find home config path");
+        if home_config_path.exists() {
+            return;
+        }
+        fs::File::create(home_config_path)
+            .and_then(|mut f| f.write_all(T::config_example_snippet().as_bytes()))
+            .ok();
+    }
+
+    pub fn load_config<T: DeserializeOwned + ConfigExampleSnippet>(
+        config_filename: &str,
+    ) -> Result<T, ConfigError> {
+        // TODO: add both root and project configs as sources
         let config_path = get_file_path(DirType::Config, config_filename, false)
             .expect("should be able to find config path");
+
+        maybe_save_example_config::<T>(config_filename);
+
         Config::builder()
             .add_source(
                 File::new(

@@ -7,7 +7,7 @@ use llmvm_core::{LLMVMCore, LLMVMCoreConfig};
 use llmvm_protocol::http::server::{HttpServer, HttpServerConfig};
 use llmvm_protocol::service::CoreService;
 use llmvm_protocol::stdio::server::{StdioServer, StdioServerConfig};
-use llmvm_protocol::{Core, GenerationParameters, GenerationRequest};
+use llmvm_protocol::{ConfigExampleSnippet, Core, GenerationParameters, GenerationRequest};
 use llmvm_util::config::load_config;
 use llmvm_util::logging::setup_subscriber;
 use serde::Deserialize;
@@ -33,6 +33,28 @@ struct CliConfigContent {
 
     #[serde(flatten)]
     lib_config: LLMVMCoreConfig,
+}
+
+impl ConfigExampleSnippet for CliConfigContent {
+    fn config_example_snippet() -> String {
+        format!(
+            r#"# The logging directive (see tracing crate for details); i.e. info, debug, etc.
+# tracing_directive = "info"
+
+{}
+
+# Stdio server configuration
+# [stdio_server]
+{}
+
+# HTTP server configuration
+# [http_server]
+{}"#,
+            LLMVMCoreConfig::config_example_snippet(),
+            StdioServerConfig::config_example_snippet(),
+            HttpServerConfig::config_example_snippet(),
+        )
+    }
 }
 
 #[derive(Args, Clone)]

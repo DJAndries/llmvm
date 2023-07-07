@@ -1,7 +1,7 @@
-pub use sweetlinks::http::*;
+pub use multilink::http::*;
 
 use serde_json::Value;
-use sweetlinks::{
+use multilink::{
     error::ProtocolErrorType,
     http::{
         client::util::{notification_sse_stream, parse_response, serialize_to_http_request},
@@ -10,9 +10,8 @@ use sweetlinks::{
             notification_sse_response, parse_request, serialize_to_http_response, validate_method,
         },
     },
-    service::ServiceResponse,
     util::parse_from_value,
-    ProtocolError,
+    ProtocolError, ServiceResponse,
 };
 
 use crate::service::{BackendRequest, BackendResponse, CoreRequest, CoreResponse};

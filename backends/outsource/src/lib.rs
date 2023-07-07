@@ -6,8 +6,9 @@ use std::str::FromStr;
 
 use futures::{stream::once, StreamExt};
 use llmvm_protocol::{
-    async_trait, error::ProtocolErrorType, service::NotificationStream, Backend,
-    BackendGenerationRequest, BackendGenerationResponse, ModelDescription, ProtocolError,
+    async_trait, error::ProtocolErrorType, Backend, BackendGenerationRequest,
+    BackendGenerationResponse, ConfigExampleSnippet, ModelDescription, NotificationStream,
+    ProtocolError,
 };
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -74,6 +75,17 @@ impl Into<ProtocolError> for OutsourceError {
 pub struct OutsourceConfig {
     pub openai_api_key: Option<String>,
     pub huggingface_api_key: Option<String>,
+}
+
+impl ConfigExampleSnippet for OutsourceConfig {
+    fn config_example_snippet() -> String {
+        r#"# API key for OpenAI
+# openai_api_key = ""
+
+# API key for Hugging Face
+# huggingface_api_key = """#
+            .into()
+    }
 }
 
 pub struct OutsourceBackend {

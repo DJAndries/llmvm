@@ -1426,9 +1426,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures",
+ "llmvm-util",
+ "multilink",
  "serde",
  "serde_json",
- "sweetlinks",
  "tokio",
 ]
 
@@ -1438,6 +1439,7 @@ version = "0.1.0"
 dependencies = [
  "config",
  "directories",
+ "multilink",
  "serde",
  "tracing-subscriber",
 ]
@@ -1575,6 +1577,24 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.16",
+]
+
+[[package]]
+name = "multilink"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "futures",
+ "hyper",
+ "hyper-rustls",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -2495,24 +2515,6 @@ name = "subtle"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81cdd64d312baedb58e21336b31bc043b77e01cc99033ce76ef539f78e965ebc"
-
-[[package]]
-name = "sweetlinks"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "async-trait",
- "futures",
- "hyper",
- "hyper-rustls",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tower",
- "tracing",
-]
 
 [[package]]
 name = "syn"

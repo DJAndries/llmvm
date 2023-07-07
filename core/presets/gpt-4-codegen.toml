@@ -1,0 +1,3 @@
+model = "outsource/openai-chat/gpt-4"
+prompt_template_id = "codegen"
+max_tokens = 2048

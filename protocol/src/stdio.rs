@@ -1,7 +1,7 @@
-pub use sweetlinks::stdio::*;
+pub use multilink::stdio::*;
 
 use serde_json::Value;
-use sweetlinks::{
+use multilink::{
     error::SerializableProtocolError,
     jsonrpc::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse},
     util::parse_from_value,

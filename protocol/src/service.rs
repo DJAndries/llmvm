@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-pub use sweetlinks::service::*;
 
 use std::{
     error::Error,
@@ -10,7 +9,7 @@ use std::{
 };
 
 use futures::stream::StreamExt;
-use sweetlinks::tower::Service;
+use multilink::{tower::Service, ServiceResponse};
 
 use crate::{
     Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
@@ -197,10 +196,9 @@ where
 
 #[cfg(all(feature = "http-client", feature = "stdio-client"))]
 pub mod util {
-    use sweetlinks::{
-        http::client::HttpClientConfig,
-        service::{util::build_service_from_config, BoxedService, ServiceError},
-        stdio::client::StdioClientConfig,
+    use multilink::{
+        http::client::HttpClientConfig, stdio::client::StdioClientConfig,
+        util::service::build_service_from_config, BoxedService, ServiceError,
     };
 
     use super::{CoreRequest, CoreResponse};

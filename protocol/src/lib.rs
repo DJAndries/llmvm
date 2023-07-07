@@ -5,7 +5,7 @@ pub mod service;
 pub mod stdio;
 
 pub use async_trait::async_trait;
-pub use sweetlinks::*;
+pub use multilink::*;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -13,7 +13,6 @@ use std::{
     fmt::{Display, Formatter},
     str::FromStr,
 };
-use sweetlinks::service::NotificationStream;
 
 pub const CHAT_MODEL_PROVIDER_SUFFIX: &str = "-chat";
 

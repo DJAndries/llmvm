@@ -7,6 +7,7 @@ use llmvm_backend_util::{run_backend, BackendCommand};
 use llmvm_outsource::{OutsourceBackend, OutsourceConfig};
 use llmvm_protocol::http::server::HttpServerConfig;
 use llmvm_protocol::stdio::server::StdioServerConfig;
+use llmvm_protocol::ConfigExampleSnippet;
 use llmvm_util::{config::load_config, logging::setup_subscriber};
 use serde::Deserialize;
 
@@ -31,6 +32,28 @@ struct CliConfigContent {
 
     #[serde(flatten)]
     lib_config: OutsourceConfig,
+}
+
+impl ConfigExampleSnippet for CliConfigContent {
+    fn config_example_snippet() -> String {
+        format!(
+            r#"# The logging directive (see tracing crate for details); i.e. info, debug, etc.
+# tracing_directive = "info"
+
+{}
+
+# Stdio server configuration
+# [stdio_server]
+{}
+
+# HTTP server configuration
+# [http_server]
+{}"#,
+            OutsourceConfig::config_example_snippet(),
+            StdioServerConfig::config_example_snippet(),
+            HttpServerConfig::config_example_snippet(),
+        )
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]

@@ -6,8 +6,9 @@ use futures::StreamExt;
 use llm::{InferenceSessionConfig, LoadError, UnsupportedModelArchitecture};
 
 use llmvm_protocol::{
-    async_trait, error::ProtocolErrorType, service::NotificationStream, Backend,
-    BackendGenerationRequest, BackendGenerationResponse, ModelDescription, ProtocolError,
+    async_trait, error::ProtocolErrorType, Backend, BackendGenerationRequest,
+    BackendGenerationResponse, ConfigExampleSnippet, ModelDescription, NotificationStream,
+    ProtocolError,
 };
 use model::LlmrsModel;
 use serde::Deserialize;
@@ -74,6 +75,32 @@ pub struct LlmrsWeightsConfig {
 #[derive(Clone, Deserialize)]
 pub struct LlmrsConfig {
     weights: Vec<LlmrsWeightsConfig>,
+}
+
+impl ConfigExampleSnippet for LlmrsConfig {
+    fn config_example_snippet() -> String {
+        r#"# [[weights]]
+# name of the weights
+# name = "weights1"
+
+# architecture of the weights
+# architecture = "llama"
+
+# number of context tokens
+# context_tokens = 2048
+
+# inference session config (optional)
+# [[weights.inference_session_config]]
+# The type of the memory K tensor.
+# memory_k_type = "Float32"
+
+# The type of the memory V tensor.
+# memory_v_type = "Float32"
+
+# Whether to use GPU acceleration
+# use_gpu = false"#
+            .into()
+    }
 }
 
 pub struct LlmrsBackend {

@@ -6,15 +6,13 @@ use handlebars::{
 };
 use llmvm_protocol::error::{ProtocolErrorType, SerializableProtocolError};
 use llmvm_protocol::http::client::{HttpClient, HttpClientConfig};
-use llmvm_protocol::service::{
-    BackendRequest, BackendResponse, BoxedService, NotificationStream, ServiceResponse,
-};
+use llmvm_protocol::service::{BackendRequest, BackendResponse};
 use llmvm_protocol::stdio::client::{StdioClient, StdioClientConfig};
 use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
-    BackendGenerationRequest, BackendGenerationResponse, Core, GenerationParameters,
-    GenerationRequest, GenerationResponse, Message, MessageRole, ModelDescription, ProtocolError,
-    ThreadInfo,
+    BackendGenerationRequest, BackendGenerationResponse, BoxedService, ConfigExampleSnippet, Core,
+    GenerationParameters, GenerationRequest, GenerationResponse, Message, MessageRole,
+    ModelDescription, NotificationStream, ProtocolError, ServiceResponse, ThreadInfo,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use rand::distributions::Alphanumeric;
@@ -378,13 +376,32 @@ pub async fn get_thread_messages(thread_id: &str) -> Result<Vec<Message>> {
     )
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
+#[serde(default)]
 pub struct LLMVMCoreConfig {
-    pub tracing_directive: Option<String>,
     pub stdio_client: Option<StdioClientConfig>,
     pub thread_ttl_secs: Option<u64>,
 
     pub http_backends: HashMap<String, HttpClientConfig>,
+}
+
+impl ConfigExampleSnippet for LLMVMCoreConfig {
+    fn config_example_snippet() -> String {
+        format!(
+            r#"# TTL in seconds for message threads (based on last modified time)
+# thread_ttl_secs = 604800
+
+# Stdio client configuration
+# [stdio_client]
+{}
+
+# HTTP backend client config
+# [http_backends.llmrs-http]
+{}"#,
+            StdioClientConfig::config_example_snippet(),
+            HttpClientConfig::config_example_snippet(),
+        )
+    }
 }
 
 pub struct LLMVMCore {

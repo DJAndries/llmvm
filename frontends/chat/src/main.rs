@@ -9,12 +9,10 @@ use clap::Parser;
 use futures::StreamExt;
 use llmvm_protocol::{
     http::client::HttpClientConfig,
-    service::{
-        util::build_core_service_from_config, BoxedService, CoreRequest, CoreResponse,
-        ServiceResponse,
-    },
+    service::{util::build_core_service_from_config, BoxedService, CoreRequest, CoreResponse},
     stdio::client::StdioClientConfig,
-    GenerationParameters, GenerationRequest, Message, MessageRole,
+    ConfigExampleSnippet, GenerationParameters, GenerationRequest, Message, MessageRole,
+    ServiceResponse,
 };
 use llmvm_util::config::load_config;
 use rustyline::{error::ReadlineError, Config as RlConfig, DefaultEditor as RlEditor, EditMode};
@@ -54,11 +52,25 @@ struct Cli {
 
 #[derive(Default, Deserialize)]
 #[serde(default)]
-pub struct ChatConfig {
-    bin_path: Option<String>,
-
+struct ChatConfig {
     stdio_core: Option<StdioClientConfig>,
     http_core: Option<HttpClientConfig>,
+}
+
+impl ConfigExampleSnippet for ChatConfig {
+    fn config_example_snippet() -> String {
+        format!(
+            r#"# Stdio core client configuration
+# [stdio_core]
+{}
+
+# HTTP core client config
+# [http_core]
+{}"#,
+            StdioClientConfig::config_example_snippet(),
+            HttpClientConfig::config_example_snippet(),
+        )
+    }
 }
 
 struct ChatApp {

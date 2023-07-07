@@ -9,10 +9,9 @@ use std::{
 use anyhow::{anyhow, bail, Result};
 use futures::{future::join_all, stream::select_all, Stream, StreamExt};
 use llmvm_protocol::{
-    service::{
-        BoxedService, CoreRequest, CoreResponse, NotificationStream, ServiceFuture, ServiceResponse,
-    },
-    GenerationParameters, GenerationRequest, GenerationResponse,
+    service::{BoxedService, CoreRequest, CoreResponse, ServiceFuture},
+    GenerationParameters, GenerationRequest, GenerationResponse, NotificationStream,
+    ServiceResponse,
 };
 use lsp_types::{
     notification::Progress,

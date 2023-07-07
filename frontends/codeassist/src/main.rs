@@ -10,6 +10,7 @@ use llmvm_protocol::{
     http::client::HttpClientConfig,
     service::{util::build_core_service_from_config, BoxedService},
     stdio::client::StdioClientConfig,
+    ConfigExampleSnippet,
 };
 use llmvm_util::config::load_config;
 use llmvm_util::logging::setup_subscriber;
@@ -43,6 +44,35 @@ pub struct CodeAssistConfig {
     default_preset: String,
 
     stream_snippets: bool,
+}
+
+impl ConfigExampleSnippet for CodeAssistConfig {
+    fn config_example_snippet() -> String {
+        format!(
+            r#"# The logging directive (see tracing crate for details); i.e. info, debug, etc.
+# tracing_directive = "info"
+
+# Prefer inserting the code completion "in place"; will
+# only do so if one preset is being used during completion
+# prefer_insert_in_place = false
+
+# Default preset to use for code completion
+# default_preset = "gpt-3.5-codegen"
+
+# Stream completed code text to editor
+# stream_snippets = false
+
+# Stdio core client configuration
+# [stdio_core]
+{}
+
+# HTTP core client config
+# [http_core]
+{}"#,
+            StdioClientConfig::config_example_snippet(),
+            HttpClientConfig::config_example_snippet(),
+        )
+    }
 }
 
 impl Default for CodeAssistConfig {

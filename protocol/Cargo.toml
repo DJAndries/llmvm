@@ -6,13 +6,14 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
+llmvm-util = { version = "0.1", path = "../util" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sweetlinks = { version = "0.1", path = "../../sweetlinks" }
+multilink = { version = "0.1", path = "../../multilink" }
 tokio = { version = "1.27", optional = true, features = ["rt"] }
 
 [features]
-http-client = ["sweetlinks/http-client"]
-http-server = ["sweetlinks/http-server"]
-stdio-client = ["sweetlinks/stdio-client"]
-stdio-server = ["sweetlinks/stdio-server"]
+http-client = ["multilink/http-client"]
+http-server = ["multilink/http-server"]
+stdio-client = ["multilink/stdio-client"]
+stdio-server = ["multilink/stdio-server"]

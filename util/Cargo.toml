@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 config = { version = "0.13", features = ["toml"], optional = true }
 directories = "5.0"
+multilink = { version = "0.1", path = "../../multilink" }
 serde = { version = "1.0", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
