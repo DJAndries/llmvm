@@ -4,8 +4,8 @@ use std::{
     sync::Arc,
 };
 
+use adapter::LspAdapter;
 use anyhow::{anyhow, Context, Result};
-use interceptor::LspInterceptor;
 use llmvm_protocol::{
     http::client::HttpClientConfig,
     service::{util::build_core_service_from_config, BoxedService},
@@ -21,6 +21,7 @@ use tokio::{
     process::Command,
 };
 
+mod adapter;
 mod complete;
 mod content;
 mod interceptor;
@@ -128,19 +129,19 @@ async fn main() -> Result<()> {
             .await
             .map_err(|e| anyhow!(e))?;
 
-    let mut interceptor = LspInterceptor::new(
+    let mut adapter = LspAdapter::new(
         Arc::new(config),
         passthrough.get_service(),
         llmvm_core_service,
     );
 
-    passthrough.set_interceptor_service(interceptor.get_service());
+    passthrough.set_adapter_service(adapter.get_service());
 
-    let interceptor_handle = tokio::spawn(async move { interceptor.run().await });
+    let adapter_handle = tokio::spawn(async move { adapter.run().await });
 
     passthrough.run().await?;
 
-    interceptor_handle.await?;
+    adapter_handle.await?;
 
     if let Some(status_code) = child.wait().await?.code() {
         exit(status_code)
