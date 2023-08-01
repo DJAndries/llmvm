@@ -1,18 +1,16 @@
 pub use multilink::http::*;
 
-use serde_json::Value;
 use multilink::{
     error::ProtocolErrorType,
-    http::{
-        client::util::{notification_sse_stream, parse_response, serialize_to_http_request},
-        hyper::{Body, Method, StatusCode, Uri},
-        server::util::{
-            notification_sse_response, parse_request, serialize_to_http_response, validate_method,
-        },
+    http::hyper::{Body, Method, StatusCode, Uri},
+    http::util::{
+        notification_sse_response, notification_sse_stream, parse_request, parse_response,
+        serialize_to_http_request, serialize_to_http_response, validate_method,
     },
     util::parse_from_value,
     ProtocolError, ServiceResponse,
 };
+use serde_json::Value;
 
 use crate::service::{BackendRequest, BackendResponse, CoreRequest, CoreResponse};
 

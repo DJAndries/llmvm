@@ -1,11 +1,11 @@
 pub use multilink::stdio::*;
 
-use serde_json::Value;
 use multilink::{
-    error::SerializableProtocolError,
     jsonrpc::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse},
     util::parse_from_value,
+    ProtocolError,
 };
+use serde_json::Value;
 
 use crate::service::{BackendRequest, BackendResponse, CoreRequest, CoreResponse};
 
@@ -17,9 +17,7 @@ const GET_ALL_THREAD_INFOS_METHOD: &str = "get_all_thread_infos";
 const GET_THREAD_MESSAGES_METHOD: &str = "get_thread_messages";
 
 impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
-    fn from_jsonrpc_request(
-        value: JsonRpcRequest,
-    ) -> Result<Option<Self>, SerializableProtocolError> {
+    fn from_jsonrpc_request(value: JsonRpcRequest) -> Result<Option<Self>, ProtocolError> {
         Ok(Some(match value.method.as_str() {
             GENERATION_METHOD => CoreRequest::Generation(value.parse_params()?),
             GENERATION_STREAM_METHOD => CoreRequest::GenerationStream(value.parse_params()?),
@@ -59,7 +57,7 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
     fn from_jsonrpc_message(
         value: JsonRpcMessage,
         original_request: &CoreRequest,
-    ) -> Result<Option<Self>, SerializableProtocolError> {
+    ) -> Result<Option<Self>, ProtocolError> {
         match value {
             JsonRpcMessage::Response(resp) => {
                 let result = resp.get_result()?;
@@ -112,9 +110,7 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
 }
 
 impl RequestJsonRpcConvert<BackendRequest> for BackendRequest {
-    fn from_jsonrpc_request(
-        value: JsonRpcRequest,
-    ) -> Result<Option<Self>, SerializableProtocolError> {
+    fn from_jsonrpc_request(value: JsonRpcRequest) -> Result<Option<Self>, ProtocolError> {
         Ok(Some(match value.method.as_str() {
             GENERATION_METHOD => BackendRequest::Generation(value.parse_params()?),
             GENERATION_STREAM_METHOD => BackendRequest::GenerationStream(value.parse_params()?),
@@ -141,7 +137,7 @@ impl ResponseJsonRpcConvert<BackendRequest, BackendResponse> for BackendResponse
     fn from_jsonrpc_message(
         value: JsonRpcMessage,
         original_request: &BackendRequest,
-    ) -> Result<Option<Self>, SerializableProtocolError> {
+    ) -> Result<Option<Self>, ProtocolError> {
         Ok(Some(match value {
             JsonRpcMessage::Response(resp) => {
                 let result = resp.get_result()?;

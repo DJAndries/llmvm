@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-futures = "0.3"
-llm = { git = "https://github.com/rustformers/llm", rev = "7927d0d9cb366dc60dfa8c3400825f43bd1a1654" }
+futures = { workspace = true }
+llm = { git = "https://github.com/rustformers/llm", rev = "7f13bb90f678e2bdf70d221f1b790fab55cb4d7f" }
 llmvm-protocol = { path = "../../protocol" }
 llmvm-util = { path = "../../util" }
-thiserror = "1.0"
-rand = "0.8"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.27", features = ["sync"] }
+thiserror = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 tokio-stream = "0.1"
-tracing = "0.1"
+tracing = { workspace = true }

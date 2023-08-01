@@ -5,7 +5,7 @@ use crate::{LlmrsError, LlmrsWeightsConfig, Result};
 use llm::samplers::TopPTopK;
 use llm::{
     InferenceParameters, InferenceRequest, InferenceSession, LoadProgress, Model,
-    ModelArchitecture, ModelParameters, OutputRequest, Prompt, VocabularySource,
+    ModelArchitecture, ModelParameters, OutputRequest, Prompt, TokenizerSource,
 };
 use llmvm_protocol::{BackendGenerationRequest, BackendGenerationResponse};
 use llmvm_util::get_file_path;
@@ -80,9 +80,9 @@ impl LlmrsModel {
         let model = Arc::from(
             tokio::task::spawn_blocking(move || {
                 llm::load_dynamic(
-                    architecture,
+                    Some(architecture),
                     &weights_path,
-                    VocabularySource::Model,
+                    TokenizerSource::Embedded,
                     parameters,
                     |progress| match progress {
                         LoadProgress::TensorLoaded {
