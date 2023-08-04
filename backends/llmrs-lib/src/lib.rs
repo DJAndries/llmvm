@@ -1,3 +1,6 @@
+//! [llmvm](https://github.com/djandries/llmvm) backend for [llm.rs](https://github.com/rustformers/llm).
+//! Supports local language models such as llama, gpt-2, mpt and more.
+
 mod model;
 
 use std::{collections::HashMap, str::FromStr, sync::Arc};
@@ -21,6 +24,7 @@ use tracing::error;
 
 pub type Result<T> = std::result::Result<T, LlmrsError>;
 
+/// Error enum containing all possible backend errors.
 #[derive(Debug, Error)]
 pub enum LlmrsError {
     #[error("failed to parse model name")]
@@ -63,18 +67,25 @@ impl Into<ProtocolError> for LlmrsError {
     }
 }
 
+/// Weights/model configuration structure.
 #[derive(Clone, Deserialize)]
 pub struct LlmrsWeightsConfig {
-    name: String,
-    architecture: String,
-    context_tokens: usize,
+    /// Name of the model.
+    pub name: String,
+    /// Architecture of the model. i.e. llama, mpt, etc.
+    pub architecture: String,
+    /// Max context token count for the model.
+    pub context_tokens: usize,
+    /// llm.rs inference session configuration.
     #[serde(default)]
-    inference_session_config: InferenceSessionConfig,
+    pub inference_session_config: InferenceSessionConfig,
 }
 
+/// Configuration structure for the backend.
 #[derive(Clone, Deserialize)]
 pub struct LlmrsConfig {
-    weights: Vec<LlmrsWeightsConfig>,
+    /// All available weight configurations for the backend.
+    pub weights: Vec<LlmrsWeightsConfig>,
 }
 
 impl ConfigExampleSnippet for LlmrsConfig {
@@ -103,6 +114,7 @@ impl ConfigExampleSnippet for LlmrsConfig {
     }
 }
 
+/// A llmvm backend that uses llm.rs under the hood.
 pub struct LlmrsBackend {
     config: LlmrsConfig,
 
@@ -143,6 +155,7 @@ impl LlmrsBackend {
         }
     }
 
+    /// Start loading models into memory.
     pub async fn load(&mut self) {
         for weights_config in &self.config.weights {
             let weights_config = weights_config.clone();
@@ -166,6 +179,8 @@ impl LlmrsBackend {
         }
     }
 
+    /// Wait for model loading tasks (if any) to finish and
+    /// close the backend.
     pub async fn close(&self) {
         for handle in self.task_handles.write().await.drain(..) {
             handle.await.expect("task should exit gracefully");

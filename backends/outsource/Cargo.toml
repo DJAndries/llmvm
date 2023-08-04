@@ -2,6 +2,9 @@
 name = "llmvm-outsource"
 version = "0.1.0"
 edition = "2021"
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
 clap = { workspace = true }

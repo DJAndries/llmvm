@@ -2,6 +2,9 @@
 name = "llmvm-util"
 version = "0.1.0"
 edition = "2021"
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
 config = { version = "0.13", features = ["toml"], optional = true }

@@ -2,6 +2,9 @@
 name = "llmvm-protocol"
 version = "0.1.0"
 edition = "2021"
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
 async-trait = "0.1"

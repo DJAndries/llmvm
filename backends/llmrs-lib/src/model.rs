@@ -66,6 +66,7 @@ impl Into<InferenceParameters> for SerializableInferenceParameters {
 }
 
 impl LlmrsModel {
+    /// Load the model into memory.
     pub async fn load(weights_config: LlmrsWeightsConfig) -> Result<Self> {
         info!("Loading weights for {}", weights_config.name);
         let weights_filename = format!("{}{}", weights_config.name, WEIGHT_FILENAME_EXT);
@@ -163,6 +164,7 @@ impl LlmrsModel {
         (handle, response_rx)
     }
 
+    /// Generate text and return the whole response.
     pub async fn generate(
         &self,
         request: BackendGenerationRequest,
@@ -179,6 +181,7 @@ impl LlmrsModel {
         Ok(BackendGenerationResponse { response })
     }
 
+    /// Request text generation and return an asynchronous stream of generated tokens.
     pub async fn generate_stream(
         &self,
         request: BackendGenerationRequest,

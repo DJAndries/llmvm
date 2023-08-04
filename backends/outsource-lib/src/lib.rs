@@ -1,3 +1,10 @@
+//! [llmvm](https://github.com/djandries/llmvm) backend which forwards generation requests
+//! to known hosted providers.
+//!
+//! Currently supported providers:
+//! - OpenAI (text and chat interface)
+//! - Hugging Face (text interface)
+
 mod huggingface;
 mod openai;
 mod util;
@@ -18,6 +25,7 @@ use util::get_api_key;
 
 pub type Result<T> = std::result::Result<T, OutsourceError>;
 
+/// Error enum containing all possible backend errors.
 #[derive(Debug, Error)]
 pub enum OutsourceError {
     #[error("provider for model not found, assumed provider name is '{0}'")]
@@ -71,6 +79,7 @@ impl Into<ProtocolError> for OutsourceError {
     }
 }
 
+/// Configuration structure for the backend.
 #[derive(Deserialize)]
 pub struct OutsourceConfig {
     pub openai_api_key: Option<String>,
@@ -88,6 +97,7 @@ impl ConfigExampleSnippet for OutsourceConfig {
     }
 }
 
+/// An llmvm backend that forwards requests to known hosted providers.
 pub struct OutsourceBackend {
     config: OutsourceConfig,
 }

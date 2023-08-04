@@ -110,6 +110,7 @@ async fn send_generate_request(
     Ok(response)
 }
 
+/// Generate text and return the whole response using the OpenAI API.
 pub async fn generate(
     request: BackendGenerationRequest,
     model_description: ModelDescription,
@@ -155,6 +156,8 @@ fn extract_response_from_stream_event(
     Ok(BackendGenerationResponse { response })
 }
 
+/// Request text generation and return an asynchronous stream of generated tokens,
+/// using the OpenAI API.
 pub async fn generate_stream(
     request: BackendGenerationRequest,
     model_description: ModelDescription,

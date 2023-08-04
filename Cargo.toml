@@ -11,6 +11,11 @@ members = [
   "./util"
 ]
 
+[workspace.package]
+authors = ["Darnell Andries <darnell@andries.ca>"]
+repository = "https://github.com/djandries/llmvm"
+license = "MPL-2.0"
+
 [workspace.dependencies]
 anyhow = "1.0"
 clap = { version = "4.1", features = ["derive"] }

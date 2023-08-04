@@ -26,6 +26,11 @@ struct ModelResponse {
     generated_text: String,
 }
 
+/// Generate text and return the whole response using the Hugging Face API.
+///
+/// Custom hosted endpoints may be used by supplying the prefix `endpoint=`, followed by the endpoint
+/// URL in the model name component of the model id. For example, the
+/// model ID could be `outsource/huggingface-text/endpoint=https://yourendpointhere`.
 pub async fn generate(
     mut request: BackendGenerationRequest,
     model_description: ModelDescription,
