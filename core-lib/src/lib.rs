@@ -19,7 +19,6 @@ use tracing::debug;
 use crate::error::CoreError;
 
 const BACKEND_COMMAND_PREFIX: &str = "llmvm-";
-const BACKEND_COMMAND_SUFFIX: &str = "-cli";
 const PROJECT_DIR_NAME: &str = ".llmvm";
 const DEFAULT_THREAD_TTL_SECS: u64 = 14 * 24 * 3600;
 
@@ -84,10 +83,7 @@ impl LLMVMCore {
         clients_guard: &'a mut HashMap<String, BoxedService<BackendRequest, BackendResponse>>,
         model_description: &ModelDescription,
     ) -> Result<&'a mut BoxedService<BackendRequest, BackendResponse>> {
-        let command = format!(
-            "{}{}{}",
-            BACKEND_COMMAND_PREFIX, model_description.backend, BACKEND_COMMAND_SUFFIX
-        );
+        let command = format!("{}{}", BACKEND_COMMAND_PREFIX, model_description.backend);
         if !clients_guard.contains_key(&model_description.backend) {
             debug!(
                 "starting backend {command} in {:?}",

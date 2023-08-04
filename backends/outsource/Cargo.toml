@@ -4,12 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-async-stream = "0.3"
-futures = { workspace = true }
-llmvm-protocol = { path = "../../protocol" }
-reqwest = { version = "0.11", features = ["json", "stream"] }
+clap = { workspace = true }
+llmvm-backend-util = { path = "../util" }
+llmvm-outsource-lib = { path = "../outsource-lib" }
+llmvm-protocol = { path = "../../protocol", features = ["http-server"] }
+llmvm-util = { path = "../../util", features = ["config"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-strum = "0.24"
-strum_macros = "0.24"
+tokio = { workspace = true, features = ["rt", "macros", "net"] }

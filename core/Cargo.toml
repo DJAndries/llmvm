@@ -4,17 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-async-stream = "0.3"
+clap = { workspace = true }
 futures = { workspace = true }
-handlebars = "4.3"
-llmvm-util = { path = "../util" }
-llmvm-protocol = { path = "../protocol", features = ["stdio-client", "http-client"] }
-rand = { workspace = true }
-rust-embed = "6.6"
+llmvm-core-lib = { path = "../core-lib" }
+llmvm-protocol = { path = "../protocol", features = ["http-server", "stdio-server"] }
+llmvm-util = { path = "../util", features = ["config", "logging"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
 serde = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
-time = { version = "0.3", features = ["formatting"] }
-tokio = { workspace = true, features = ["fs"] }
-toml = "0.7"
 tracing = { workspace = true }

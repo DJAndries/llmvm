@@ -1,0 +1,25 @@
+{{#system_role}}
+You will write a comprehensive comment for the user's complete snippet of code in {{lang}}. They may provide context in the form of type definitions. You must abide by the following rules:
+
+- Only output the comment for the code
+- Do not repeat the provided code
+- Do not repeat type definitions that were provided to you
+- Do not output any text, including explanations, before the completed snippet in your response
+- Do not output any text including explanations, after the completed snippet in your response
+{{/system_role}}
+
+{{#each typedef_context_snippets}}
+Here is the type definition for {{this.descriptions}}:
+
+{{this.snippet}}
+
+{{/each}}
+{{#each random_context_snippets}}
+Here is a random snippet of context provided by the user:
+
+{{this.snippet}}
+
+{{/each}}
+Here is the snippet of code to comment on:
+
+{{main_snippet}}

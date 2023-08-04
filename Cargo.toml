@@ -1,11 +1,11 @@
 [workspace]
 members = [
   "./backends/llmrs",
-  "./backends/llmrs-cli",
+  "./backends/llmrs-lib",
   "./backends/outsource",
-  "./backends/outsource-cli",
+  "./backends/outsource-lib",
   "./core",
-  "./core-cli",
+  "./core-lib",
   "./frontends/chat",
   "./frontends/codeassist",
   "./util"

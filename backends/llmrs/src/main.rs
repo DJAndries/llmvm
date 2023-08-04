@@ -4,15 +4,15 @@ use std::{io, process::exit};
 
 use clap::{command, Parser};
 use llmvm_backend_util::{run_backend, BackendCommand};
-use llmvm_outsource::{OutsourceBackend, OutsourceConfig};
+use llmvm_llmrs_lib::{LlmrsBackend, LlmrsConfig};
 use llmvm_protocol::http::server::HttpServerConfig;
 use llmvm_protocol::stdio::server::StdioServerConfig;
 use llmvm_protocol::ConfigExampleSnippet;
 use llmvm_util::{config::load_config, logging::setup_subscriber};
 use serde::Deserialize;
 
-const CONFIG_FILENAME: &str = "outsource.toml";
-const LOG_FILENAME: &str = "outsource.log";
+const CONFIG_FILENAME: &str = "llmrs.toml";
+const LOG_FILENAME: &str = "llmrs.log";
 
 #[derive(Parser)]
 #[command(version)]
@@ -31,7 +31,7 @@ struct CliConfigContent {
     http_server: Option<HttpServerConfig>,
 
     #[serde(flatten)]
-    lib_config: OutsourceConfig,
+    lib_config: LlmrsConfig,
 }
 
 impl ConfigExampleSnippet for CliConfigContent {
@@ -49,7 +49,7 @@ impl ConfigExampleSnippet for CliConfigContent {
 # HTTP server configuration
 # [http_server]
 {}"#,
-            OutsourceConfig::config_example_snippet(),
+            LlmrsConfig::config_example_snippet(),
             StdioServerConfig::config_example_snippet(),
             HttpServerConfig::config_example_snippet(),
         )
@@ -77,9 +77,13 @@ async fn main() -> io::Result<()> {
         },
     );
 
+    let mut backend = LlmrsBackend::new(config.lib_config);
+
+    backend.load().await;
+
     run_backend(
         cli.command,
-        Arc::new(OutsourceBackend::new(config.lib_config)),
+        Arc::new(backend),
         config.stdio_server,
         config.http_server,
     )

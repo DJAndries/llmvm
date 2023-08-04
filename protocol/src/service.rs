@@ -1,9 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use std::{
-    error::Error,
-    future::Future,
-    pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -11,23 +8,28 @@ use std::{
 use futures::stream::StreamExt;
 use multilink::{tower::Service, ServiceResponse};
 
+pub use multilink::{BoxedService, ServiceError, ServiceFuture};
+
 use crate::{
     Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
     GenerationResponse, Message, ThreadInfo,
 };
 
+/// Enum containing all types of backend requests.
 #[derive(Clone, Serialize, Deserialize)]
 pub enum BackendRequest {
     Generation(BackendGenerationRequest),
     GenerationStream(BackendGenerationRequest),
 }
 
+/// Enum containing all types of backend responses.
 #[derive(Clone, Serialize, Deserialize)]
 pub enum BackendResponse {
     Generation(BackendGenerationResponse),
     GenerationStream(BackendGenerationResponse),
 }
 
+/// Enum containing all types of core requests.
 #[derive(Clone, Serialize, Deserialize)]
 pub enum CoreRequest {
     Generation(GenerationRequest),
@@ -38,6 +40,7 @@ pub enum CoreRequest {
     InitProject,
 }
 
+/// Enum containing all types of core responses.
 #[derive(Clone, Serialize, Deserialize)]
 pub enum CoreResponse {
     Generation(GenerationResponse),
@@ -48,6 +51,8 @@ pub enum CoreResponse {
     InitProject,
 }
 
+/// Service that receives [`BackendRequest`] values,
+/// calls a [`Backend`] and responds with [`BackendResponse`].
 pub struct BackendService<B>
 where
     B: Backend,
@@ -75,6 +80,8 @@ where
     }
 }
 
+/// Service that receives [`CoreRequest`] values,
+/// calls a [`Core`] and responds with [`CoreResponse`].
 pub struct CoreService<C>
 where
     C: Core,
@@ -101,19 +108,6 @@ where
         Self { core }
     }
 }
-
-pub type ServiceError = Box<dyn Error + Send + Sync + 'static>;
-pub type ServiceFuture<Response> =
-    Pin<Box<dyn Future<Output = Result<Response, ServiceError>> + Send>>;
-pub type BoxedService<Request, Response> = Box<
-    dyn Service<
-            Request,
-            Response = ServiceResponse<Response>,
-            Error = ServiceError,
-            Future = ServiceFuture<ServiceResponse<Response>>,
-        > + Send
-        + Sync,
->;
 
 impl<B> Service<BackendRequest> for BackendService<B>
 where
@@ -203,9 +197,14 @@ pub mod util {
 
     use super::{CoreRequest, CoreResponse};
 
-    pub const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core-cli";
+    /// The default name of the core cli binary.
+    pub const LLMVM_CORE_CLI_COMMAND: &str = "llmvm-core";
+    /// CLI arguments for the core, when invoking the process for stdio communication.
     pub const LLMVM_CORE_CLI_ARGS: [&'static str; 2] = ["--log-to-file", "stdio-server"];
 
+    /// Create a core service client that communicates with stdio or HTTP.
+    /// If `http_client_config` is provided, an HTTP client will be created.
+    /// Otherwise, a stdio client is created. Useful for frontends.
     pub async fn build_core_service_from_config(
         stdio_client_config: Option<StdioClientConfig>,
         http_client_config: Option<HttpClientConfig>,

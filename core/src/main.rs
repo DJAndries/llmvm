@@ -3,7 +3,7 @@ use std::{process::exit, sync::Arc};
 
 use clap::{arg, command, Args, Parser, Subcommand};
 use futures::stream::StreamExt;
-use llmvm_core::{LLMVMCore, LLMVMCoreConfig};
+use llmvm_core_lib::{LLMVMCore, LLMVMCoreConfig};
 use llmvm_protocol::http::server::{HttpServer, HttpServerConfig};
 use llmvm_protocol::service::CoreService;
 use llmvm_protocol::stdio::server::{StdioServer, StdioServerConfig};

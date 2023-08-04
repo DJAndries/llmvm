@@ -1338,6 +1338,20 @@ dependencies = [
 name = "llmvm-core"
 version = "0.1.0"
 dependencies = [
+ "clap",
+ "futures",
+ "llmvm-core-lib",
+ "llmvm-protocol",
+ "llmvm-util",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "llmvm-core-lib"
+version = "0.1.0"
+dependencies = [
  "async-stream",
  "futures",
  "handlebars",
@@ -1355,21 +1369,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "llmvm-core-cli"
+name = "llmvm-llmrs"
 version = "0.1.0"
 dependencies = [
  "clap",
- "futures",
- "llmvm-core",
+ "llmvm-backend-util",
+ "llmvm-llmrs-lib",
  "llmvm-protocol",
  "llmvm-util",
  "serde",
  "tokio",
- "tracing",
 ]
 
 [[package]]
-name = "llmvm-llmrs"
+name = "llmvm-llmrs-lib"
 version = "0.1.0"
 dependencies = [
  "futures",
@@ -1386,12 +1399,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "llmvm-llmrs-cli"
+name = "llmvm-outsource"
 version = "0.1.0"
 dependencies = [
  "clap",
  "llmvm-backend-util",
- "llmvm-llmrs",
+ "llmvm-outsource-lib",
  "llmvm-protocol",
  "llmvm-util",
  "serde",
@@ -1399,7 +1412,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "llmvm-outsource"
+name = "llmvm-outsource-lib"
 version = "0.1.0"
 dependencies = [
  "async-stream",
@@ -1411,19 +1424,6 @@ dependencies = [
  "strum",
  "strum_macros",
  "thiserror",
-]
-
-[[package]]
-name = "llmvm-outsource-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "llmvm-backend-util",
- "llmvm-outsource",
- "llmvm-protocol",
- "llmvm-util",
- "serde",
- "tokio",
 ]
 
 [[package]]
