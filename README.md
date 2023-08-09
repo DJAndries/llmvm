@@ -8,7 +8,7 @@ Includes a [code assistant](https://github.com/djandries/llmvm/tree/master/front
 
 ## Overview
 
-llmvm consists of four components:
+llmvm consists of three types of applications:
 
 - [Frontends](https://github.com/djandries/llmvm/tree/master/frontends): specialized applications that use language models
 - [The core](https://github.com/djandries/llmvm/tree/master/core): manages state related to text generation, such as:
@@ -17,8 +17,8 @@ llmvm consists of four components:
   - Message threads
   - Projects/workspaces
 - [Backends](https://github.com/djandries/llmvm/tree/master/backends): wrappers for language models, handles raw text generation requests
-- [Protocol](https://github.com/djandries/llmvm/tree/master/protocol): the glue between the above components
-  - Uses [multilink](https://github.com/djandries/multilink) and [tower](https://github.com/tower-rs/tower)
+
+The [protocol](https://github.com/djandries/llmvm/tree/master/protocol) acts as the glue between the above applications. Uses [multilink](https://github.com/djandries/multilink) and [tower](https://github.com/tower-rs/tower) to achieve this.
 
 Each component can interact with a dependency component via three methods:
 
