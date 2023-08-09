@@ -2,9 +2,12 @@
 name = "llmvm-outsource"
 version = "1.0.0"
 edition = "2021"
+description = "An llmvm backend which sends text and chat generation requests to known hosted language model providers."
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
+categories = ["text-processing", "api-bindings", "command-line-utilities"]
+keywords = ["llm", "ai", "openai", "huggingface"]
 
 [dependencies]
 clap = { workspace = true }

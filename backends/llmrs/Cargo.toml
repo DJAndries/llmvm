@@ -2,9 +2,12 @@
 name = "llmvm-llmrs"
 version = "1.0.0"
 edition = "2021"
+description = "A library that contains protocol/communication elements for llmvm."
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
+categories = ["text-processing", "api-bindings", "command-line-utilities"]
+keywords = ["llama", "llm", "ai"]
 
 [dependencies]
 clap = { workspace = true }

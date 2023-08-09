@@ -2,6 +2,7 @@
 name = "llmvm-backend-util"
 version = "0.1.0"
 edition = "2021"
+description = "Utility functions for llmvm backends."
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
