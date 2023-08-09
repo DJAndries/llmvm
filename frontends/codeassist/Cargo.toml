@@ -2,9 +2,12 @@
 name = "llmvm-codeassist"
 version = "0.1.0"
 edition = "2021"
+description = "A LLM-powered code assistant that automatically retrieves context (i.e. type definitions) from a Language Server Protocol server."
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
+categories = ["text-processing", "science", "development-tools"]
+keywords = ["llm", "ai", "code", "assistant", "lsp"]
 
 [dependencies]
 anyhow = { workspace = true }

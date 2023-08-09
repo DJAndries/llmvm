@@ -2,9 +2,12 @@
 name = "llmvm-chat"
 version = "0.1.0"
 edition = "2021"
+description = "An llmvm frontend that acts as a CLI chat interface."
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
+categories = ["text-processing", "science", "command-line-utilities"]
+keywords = ["llm", "ai", "chat"]
 
 [dependencies]
 anyhow = { workspace = true }
