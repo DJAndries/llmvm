@@ -1,6 +1,6 @@
 [package]
 name = "llmvm-core-lib"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors.workspace = true
 repository.workspace = true
@@ -10,8 +10,8 @@ license.workspace = true
 async-stream = "0.3"
 futures = { workspace = true }
 handlebars = "4.3"
-llmvm-util = { path = "../util" }
-llmvm-protocol = { path = "../protocol", features = ["stdio-client", "http-client"] }
+llmvm-util = { version = "0.1", path = "../util" }
+llmvm-protocol = { version = "1.0", path = "../protocol", features = ["stdio-client", "http-client"] }
 rand = { workspace = true }
 rust-embed = "6.6"
 serde = { workspace = true }

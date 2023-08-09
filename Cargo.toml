@@ -27,3 +27,8 @@ serde_json = "1.0"
 thiserror = "1.0"
 tokio = "1.29"
 tracing = "0.1"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true

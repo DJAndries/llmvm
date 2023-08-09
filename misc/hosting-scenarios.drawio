@@ -1,0 +1,77 @@
+<mxfile host="app.diagrams.net" modified="2023-08-09T08:22:21.006Z" agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36" etag="PqqbFvPCwEN-aA0Hvcoc" version="21.6.6" type="device">
+  <diagram name="Page-1" id="bipxCEk_f9HK_45ztCmv">
+    <mxGraphModel dx="798" dy="509" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-1" value="Frontend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="20" y="90" width="260" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-2" value="Core&lt;br&gt;(child process of frontend)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;sketch=1;curveFitting=1;jiggle=2;spacingRight=21;" vertex="1" parent="1">
+          <mxGeometry x="190" y="120" width="170" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-4" value="Backend&lt;br&gt;(child process of core)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;sketch=1;curveFitting=1;jiggle=2;shadow=0;glass=0;" vertex="1" parent="1">
+          <mxGeometry x="340" y="145" width="140" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-12" value="Example Scenario 1: everything is local" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry y="30" width="290" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-13" value="Host B" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;align=left;verticalAlign=top;spacingTop=4;spacingLeft=12;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="530" y="410" width="240" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-14" value="Host A" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;align=left;verticalAlign=top;spacingTop=4;spacingLeft=12;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="30" y="360" width="370" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-15" value="Frontend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="100" y="420" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-16" value="Core&lt;br&gt;(child process)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="230" y="440" width="120" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-17" value="Backend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="590" y="450" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-18" value="" style="endArrow=classic;html=1;rounded=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="SAEZ2GQI6dvZRwwL3VwZ-16" target="SAEZ2GQI6dvZRwwL3VwZ-17">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="460" y="540" as="sourcePoint" />
+            <mxPoint x="510" y="490" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-27" value="HTTP requests" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="SAEZ2GQI6dvZRwwL3VwZ-18">
+          <mxGeometry x="-0.0762" y="2" relative="1" as="geometry">
+            <mxPoint y="-8" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-19" value="Example Scenario 2: Hosted model" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="10" y="320" width="250" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-20" value="Host B" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;align=left;verticalAlign=top;spacingTop=4;spacingLeft=12;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="530" y="720" width="240" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-21" value="Host A" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;align=left;verticalAlign=top;spacingTop=4;spacingLeft=12;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="30" y="670" width="370" height="240" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-28" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.34;entryDx=0;entryDy=0;entryPerimeter=0;" edge="1" parent="1" source="SAEZ2GQI6dvZRwwL3VwZ-22" target="SAEZ2GQI6dvZRwwL3VwZ-23">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-29" value="HTTP requests" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="SAEZ2GQI6dvZRwwL3VwZ-28">
+          <mxGeometry x="0.2929" y="-1" relative="1" as="geometry">
+            <mxPoint x="13" y="-12" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-22" value="Frontend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="100" y="730" width="180" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-23" value="Core" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="540" y="760" width="120" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-24" value="Backend (child process)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;sketch=1;curveFitting=1;jiggle=2;" vertex="1" parent="1">
+          <mxGeometry x="630" y="775" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="SAEZ2GQI6dvZRwwL3VwZ-26" value="Example Scenario 3: Hosted core" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry y="630" width="250" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

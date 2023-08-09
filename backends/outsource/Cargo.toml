@@ -1,6 +1,6 @@
 [package]
 name = "llmvm-outsource"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors.workspace = true
 repository.workspace = true
@@ -8,9 +8,9 @@ license.workspace = true
 
 [dependencies]
 clap = { workspace = true }
-llmvm-backend-util = { path = "../util" }
-llmvm-outsource-lib = { path = "../outsource-lib" }
-llmvm-protocol = { path = "../../protocol", features = ["http-server"] }
-llmvm-util = { path = "../../util", features = ["config"] }
+llmvm-backend-util = { version = "0.1", path = "../util" }
+llmvm-outsource-lib = { version = "1.0", path = "../outsource-lib" }
+llmvm-protocol = { version = "1.0", path = "../../protocol", features = ["http-server"] }
+llmvm-util = { version = "0.1", path = "../../util", features = ["config"] }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt", "macros", "net"] }

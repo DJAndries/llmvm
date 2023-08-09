@@ -8,7 +8,7 @@ The library for the outsource backend for [llmvm](https://github.com/djandries/l
 
 Sends text and chat generation requests to known hosted language model providers.
 
-See the executable wrapper [llmvm-outsource](https://github.com/djandries/llmvm/backends/outsource) for more information.
+See the executable wrapper [llmvm-outsource](https://github.com/djandries/llmvm/tree/master/backends/outsource) for more information.
 
 ## Usage
 

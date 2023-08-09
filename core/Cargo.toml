@@ -1,6 +1,6 @@
 [package]
 name = "llmvm-core"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 authors.workspace = true
 repository.workspace = true
@@ -9,9 +9,9 @@ license.workspace = true
 [dependencies]
 clap = { workspace = true }
 futures = { workspace = true }
-llmvm-core-lib = { path = "../core-lib" }
-llmvm-protocol = { path = "../protocol", features = ["http-server", "stdio-server"] }
-llmvm-util = { path = "../util", features = ["config", "logging"] }
+llmvm-core-lib = { version = "1.0", path = "../core-lib" }
+llmvm-protocol = { version = "1.0", path = "../protocol", features = ["http-server", "stdio-server"] }
+llmvm-util = { version = "0.1", path = "../util", features = ["config", "logging"] }
 tokio = { workspace = true, features = ["rt", "macros"] }
 serde = { workspace = true }
 tracing = { workspace = true }

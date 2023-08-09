@@ -8,7 +8,7 @@ The library for the llmrs backend for [llmvm](https://github.com/djandries/llmvm
 
 Uses the [llm](https://github.com/rustformers/llm) crate to process text generation requests using local models.
 
-See the executable wrapper [llmvm-llmrs](https://github.com/djandries/llmvm/backends/llmrs) for more information.
+See the executable wrapper [llmvm-llmrs](https://github.com/djandries/llmvm/tree/master/backends/llmrs) for more information.
 
 ## Usage
 

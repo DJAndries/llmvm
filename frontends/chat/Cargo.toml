@@ -10,8 +10,8 @@ license.workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
-llmvm-protocol = { path = "../../protocol", features = ["stdio-client", "http-client"] }
-llmvm-util = { path = "../../util", features = ["config"] }
+llmvm-protocol = { version = "1.0", path = "../../protocol", features = ["stdio-client", "http-client"] }
+llmvm-util = { version = "0.1", path = "../../util", features = ["config"] }
 rustyline = { version = "12.0", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }

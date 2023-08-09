@@ -9,6 +9,7 @@ use crate::{error::CoreError, Result};
 #[folder = "./presets"]
 struct BuiltInPresets;
 
+/// Loads a preset from the current project or user home directory.
 pub async fn load_preset(preset_id: &str) -> Result<GenerationParameters> {
     let preset_file_name = format!("{}.toml", preset_id);
     let preset_path = get_file_path(DirType::Presets, &preset_file_name, false)

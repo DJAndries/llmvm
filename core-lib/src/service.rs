@@ -6,6 +6,7 @@ use llmvm_protocol::{
     error::ProtocolErrorType, service::BackendResponse, Core, GenerationRequest,
     GenerationResponse, Message, NotificationStream, ProtocolError, ThreadInfo,
 };
+use llmvm_util::{get_file_path, DirType};
 use tracing::debug;
 
 use crate::{
@@ -110,6 +111,14 @@ impl Core for LLMVMCore {
             error_type: ProtocolErrorType::Internal,
             error: Box::new(error),
         })?;
+        // Call the following util method for all dir types
+        // to trigger creation of project subdirectories
+        get_file_path(DirType::Prompts, "", true);
+        get_file_path(DirType::Presets, "", true);
+        get_file_path(DirType::Threads, "", true);
+        get_file_path(DirType::Logs, "", true);
+        get_file_path(DirType::Config, "", true);
+        get_file_path(DirType::Weights, "", true);
         Ok(())
     }
 }

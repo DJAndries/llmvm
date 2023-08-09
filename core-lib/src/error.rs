@@ -7,6 +7,7 @@ use llmvm_protocol::{
 };
 use thiserror::Error;
 
+/// Error enum containing all possible core errors.
 #[derive(Debug, Error)]
 pub enum CoreError {
     #[error("io error: {0}")]

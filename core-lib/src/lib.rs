@@ -1,9 +1,18 @@
+//! The core components for [llmvm](https://github.com/djandries/llmvm).
+//!
+//! Assumes the following responsibilities:
+//! - Sending generation requests to backends
+//! - Managing message threads
+//! - Model presets
+//! - Prompt templates
+//! - Projects
+
 pub mod error;
 pub mod generation;
 pub mod presets;
 pub mod prompts;
 pub mod service;
-pub mod threads;
+mod threads;
 
 use llmvm_protocol::http::client::{HttpClient, HttpClientConfig};
 use llmvm_protocol::service::{BackendRequest, BackendResponse};
@@ -24,12 +33,16 @@ const DEFAULT_THREAD_TTL_SECS: u64 = 14 * 24 * 3600;
 
 pub type Result<T> = std::result::Result<T, CoreError>;
 
+/// Configuration structure for the llmvm core.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct LLMVMCoreConfig {
+    /// Configuration for all backend stdio clients.
     pub stdio_client: Option<StdioClientConfig>,
+    /// The max time-to-live for threads in seconds.
+    /// Threads with a last modified time older than the TTL will be removed.
     pub thread_ttl_secs: Option<u64>,
-
+    /// HTTP client configurations for remote backends.
     pub http_backends: HashMap<String, HttpClientConfig>,
 }
 
@@ -52,6 +65,9 @@ impl ConfigExampleSnippet for LLMVMCoreConfig {
     }
 }
 
+/// The llmvm core which handles sending generation requests to the backend,
+/// managing message threads, model presets, and prompt templates. Frontends
+/// request text generation by invoking the core.
 pub struct LLMVMCore {
     clients: Mutex<HashMap<String, BoxedService<BackendRequest, BackendResponse>>>,
     config: LLMVMCoreConfig,
@@ -106,7 +122,10 @@ impl LLMVMCore {
         Ok(clients_guard.get_mut(&model_description.backend).unwrap())
     }
 
-    pub async fn close_client(&self, model: &str) {
-        self.clients.lock().await.remove(model);
+    /// Close the active stdio (local child process) or HTTP client (remote process)
+    /// for a given backend. If the backend client is over stdio, the backend child process
+    /// will be killed.
+    pub async fn close_client(&self, backend_name: &str) {
+        self.clients.lock().await.remove(backend_name);
     }
 }

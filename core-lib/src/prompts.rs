@@ -52,9 +52,15 @@ impl SystemRoleHelperState {
     }
 }
 
+/// A prompt that is ready to use for text generation.
+/// May contain an optional prompt for the system role.
 #[derive(Debug)]
 pub struct ReadyPrompt {
+    /// A system role prompt. For chat generation requests, this will be appended
+    /// to the `thread_messages` of the backend generation request. For non-chat
+    /// generation requests, the system prompt will be prepended to the main prompt.
     pub system_prompt: Option<String>,
+    /// The main prompt. For chat generation requests, this prompt should use the user role.
     pub main_prompt: String,
 }
 
@@ -98,13 +104,15 @@ impl ReadyPrompt {
             main_prompt = format!("{}\n\n{}", system_prompt.take().unwrap(), main_prompt);
         }
 
-        // TODO: Append system prompt to beginning of non chat prompt
         Ok(Self {
             system_prompt,
             main_prompt,
         })
     }
 
+    /// Loads a Handlebars prompt template from the current project or
+    /// user home directory, and generates a full prompt using the
+    /// given template parameters.
     pub async fn from_stored_template(
         template_id: &str,
         parameters: &Value,
@@ -114,6 +122,7 @@ impl ReadyPrompt {
         Self::process(&template, parameters, is_chat_model)
     }
 
+    /// Generates a full prompt using a Handlebars template and parameters.
     pub fn from_custom_template(
         template: &str,
         parameters: &Value,
@@ -122,6 +131,7 @@ impl ReadyPrompt {
         Self::process(template, parameters, is_chat_model)
     }
 
+    /// Creates a `ReadyPrompt` from a completed prompt.
     pub fn from_custom_prompt(main_prompt: String) -> Self {
         Self {
             system_prompt: None,
