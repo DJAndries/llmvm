@@ -13,10 +13,13 @@ Example of an llmvm model ID for this backend: `llmrs/llmrs-text/mpt-7b-chat-q4_
 
 ## Installation
 
-Install this backend using `cargo`.
+Since the latest `llm` crate is unpublished on crates.io, you will need to clone this repo to install this backend.
+
+Clone the repo, and install this backend using `cargo`.
 
 ```
-cargo install llmvm-llmrs
+git clone https://github.com/djandries/llmvm
+cargo install --path ./llmvm/backends/llmrs
 ```
 
 ## Usage

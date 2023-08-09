@@ -14,6 +14,6 @@ clap = { workspace = true }
 llmvm-backend-util = { version = "0.1", path = "../util" }
 llmvm-outsource-lib = { version = "1.0", path = "../outsource-lib" }
 llmvm-protocol = { version = "1.0", path = "../../protocol", features = ["http-server", "stdio-server"] }
-llmvm-util = { version = "0.1", path = "../../util", features = ["config"] }
+llmvm-util = { version = "0.1", path = "../../util", features = ["config", "logging"] }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt", "macros", "net"] }

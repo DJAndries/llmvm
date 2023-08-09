@@ -12,11 +12,11 @@ See the executable wrapper [llmvm-llmrs](https://github.com/djandries/llmvm/tree
 
 ## Usage
 
-Add the dependency to `Cargo.toml`:
+Add the dependency to `Cargo.toml`. Since the latest `llm` crate is unpublished on crates.io, you will need to use a git dependency in the meantime:
 
 ```
 [dependencies]
-llmvm-llmrs-lib = { version = "<version>" }
+llmvm-llmrs-lib = { git = "https://github.com/djandries/llmvm", rev = "<latest git revision>" }
 ```
 
 ## Reference documentation
