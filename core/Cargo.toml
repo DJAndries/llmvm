@@ -2,9 +2,12 @@
 name = "llmvm-core"
 version = "1.0.0"
 edition = "2021"
+description = "The core application for llmvm."
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
+categories = ["text-processing", "api-bindings", "command-line-utilities"]
+keywords = ["llm", "ai"]
 
 [dependencies]
 clap = { workspace = true }
