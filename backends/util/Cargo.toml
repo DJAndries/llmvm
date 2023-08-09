@@ -9,6 +9,6 @@ license.workspace = true
 
 [dependencies]
 clap = { version = "4.1", features = ["derive"] }
-llmvm-protocol = { version = "1.0", path = "../../protocol", features = ["http-server"] }
+llmvm-protocol = { version = "1.0", path = "../../protocol", features = ["http-server", "stdio-server"] }
 serde_json = "1.0"
 tracing = "0.1"

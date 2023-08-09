@@ -13,7 +13,7 @@ keywords = ["llama", "llm", "ai"]
 clap = { workspace = true }
 llmvm-backend-util = { version = "0.1", path = "../util" }
 llmvm-llmrs-lib = { version = "1.0", path = "../llmrs-lib" }
-llmvm-protocol = { version = "1.0", path = "../../protocol", features = ["http-server"] }
+llmvm-protocol = { version = "1.0", path = "../../protocol", features = ["http-server", "stdio-server"] }
 llmvm-util = { version = "0.1", path = "../../util", features = ["config", "logging"] }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
