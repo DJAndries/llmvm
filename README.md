@@ -11,7 +11,7 @@ Includes a [code assistant](https://github.com/djandries/llmvm/tree/master/front
 llmvm consists of three types of applications:
 
 - [Frontends](https://github.com/djandries/llmvm/tree/master/frontends): specialized applications that use language models
-- [The core](https://github.com/djandries/llmvm/tree/master/core): manages state related to text generation, such as:
+- [The core](https://github.com/djandries/llmvm/tree/master/core): acts as middleman between frontend and backend; manages state related to text generation, such as:
   - Model presets
   - Prompt templates
   - Message threads
