@@ -20,6 +20,18 @@ llmvm consists of three types of applications:
 
 The [protocol](https://github.com/djandries/llmvm/tree/master/protocol) acts as the glue between the above applications. Uses [multilink](https://github.com/djandries/multilink) and [tower](https://github.com/tower-rs/tower) to achieve this.
 
+### Available crates
+
+- Frontends
+  - [codeassist](https://github.com/djandries/llmvm/tree/master/frontends/codeassist): A LLM-powered code assistant that automatically retrieves context (i.e. type definitions) from a Language Server Protocol server
+  - [chat](https://github.com/djandries/llmvm/tree/master/frontends/chat): A CLI chat interface
+- [Core](https://github.com/djandries/llmvm/tree/master/core)
+- Backends
+  - [outsource](https://github.com/djandries/llmvm/tree/master/backends/outsource): Forwards generation requests to known hosted language model providers such as OpenAI and Hugging Face
+  - [llmrs](https://github.com/djandries/llmvm/tree/master/backends/llmrs): Uses the [llm](https://github.com/rustformers/llm) crate to process generation requests. Supported models include LLaMA, GPT-2, GPT-J and more.
+
+### Communication
+
 Each component can interact with a dependency component via three methods:
 
 - Local child process: the component invokes the dependency component as a child process, and communicates via stdio using JSON-RPC
@@ -38,16 +50,6 @@ This allows for some flexible hosting configurations. Here are some examples:
 - Saves message threads, presets and prompt templates on the filesystem for easy editing/tweaking
 - Workspace / project management for isolating project state from global state
 - Modular design; any component can by invoked by the user via CLI for a one-off low-level or high-level request.
-
-### Available crates
-
-- Frontends
-  - [codeassist](https://github.com/djandries/llmvm/tree/master/frontends/codeassist): A LLM-powered code assistant that automatically retrieves context (i.e. type definitions) from a Language Server Protocol server
-  - [chat](https://github.com/djandries/llmvm/tree/master/frontends/chat): A CLI chat interface
-- [Core](https://github.com/djandries/llmvm/tree/master/core)
-- Backends
-  - [outsource](https://github.com/djandries/llmvm/tree/master/backends/outsource): Forwards generation requests to known hosted language model providers such as OpenAI and Hugging Face
-  - [llmrs](https://github.com/djandries/llmvm/tree/master/backends/llmrs): Uses the [llm](https://github.com/rustformers/llm) crate to process generation requests. Supported models include LLaMA, GPT-2, GPT-J and more.
 
 ## Installation
 
