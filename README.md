@@ -8,7 +8,7 @@ Includes a [code assistant](https://github.com/djandries/llmvm/tree/master/front
 
 ## Overview
 
-llmvm consists of three types of applications:
+llmvm consists of three types of executable applications:
 
 - [Frontends](https://github.com/djandries/llmvm/tree/master/frontends): specialized applications that use language models
 - [The core](https://github.com/djandries/llmvm/tree/master/core): acts as middleman between frontend and backend; manages state related to text generation, such as:
