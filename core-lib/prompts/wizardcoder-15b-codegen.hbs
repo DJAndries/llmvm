@@ -1,0 +1,36 @@
+Below is context and instruction that describes a task. Write a response that appropriately completes the request. 
+
+### Context:
+{{#each typedef_context_snippets}}
+Here is the type definition for {{this.descriptions}}:
+
+```{{lang}}
+{{this.snippet}}
+```
+
+{{/each}}
+
+{{#each random_context_snippets}}
+Here is a random snippet of context provided by the user:
+
+```{{lang}}
+{{this.snippet}}
+```
+
+{{/each}}
+
+### Instruction:
+Complete the subsequent code snippet. You must abide by the following rules:
+
+- Only output the completed code snippet
+- You may embed comments within the snippet
+- Do not repeat type definitions that were provided to you
+- Do not output any text or prose, including explanations, before the completed snippet in your response
+- Do not output any text or prose, including explanations, after the completed snippet in your response
+- The response should be appropriate for inclusion directly into code
+
+```{{lang}}
+{{main_snippet}}
+```
+
+### Response:

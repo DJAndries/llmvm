@@ -1,0 +1,3 @@
+model = "outsource/ollama-text/jcdickinson/wizardcoder:15b-q5_k_m"
+prompt_template_id = "wizardcoder-15b-codegen"
+max_tokens = 2048
