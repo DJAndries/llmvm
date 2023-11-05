@@ -18,6 +18,7 @@ use std::{
     fmt::{Display, Formatter},
     str::FromStr,
 };
+use url::Url;
 
 pub const CHAT_MODEL_PROVIDER_SUFFIX: &str = "-chat";
 
@@ -190,6 +191,8 @@ pub struct ModelDescription {
     pub provider: String,
     /// Name of the model. i.e. `gpt-3.5-turbo`
     pub model_name: String,
+    /// Endpoint (If any)
+    pub endpoint: Option<Url>,
 }
 
 impl ModelDescription {
@@ -206,14 +209,32 @@ impl FromStr for ModelDescription {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let split = s.split("/");
         let tokens: Vec<String> = split.map(|v| v.to_string()).collect();
-        if tokens.len() < 3 || tokens.iter().any(|v| v.is_empty()) {
+        if tokens.len() < 3 || tokens[..2].iter().any(|v| v.is_empty()) {
             return Err(());
         }
+        let maybe_endpoint = if tokens.len() >= 3 {
+            let tail = tokens[3..].join("/");
+            // TODO: Maybe use the url crate for query string parsing? (see: https://docs.rs/url/1.4.0/url/form_urlencoded/fn.parse.html)
+            let endpoint_prefix = "endpoint=";
+            if tail.starts_with(&endpoint_prefix) {
+                let parse_url_result = Url::parse(&tail[endpoint_prefix.len()..]);
+                if parse_url_result.is_ok() {
+                    Some(parse_url_result.unwrap())
+                } else {
+                    return Err(());
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let mut tokens_iter = tokens.into_iter();
         Ok(Self {
             backend: tokens_iter.next().unwrap(),
             provider: tokens_iter.next().unwrap(),
-            model_name: tokens_iter.collect::<Vec<String>>().join("/"),
+            model_name: tokens_iter.next().unwrap(),
+            endpoint: maybe_endpoint,
         })
     }
 }
