@@ -45,12 +45,12 @@ Run the backend executable to generate a configuration file at:
 |`stdio_server`|No|Stdio server settings. See [llmvm-protocol](https://github.com/djandries/llmvm/tree/master/protocol#stdio-server-configuration) for details.|
 |`http_server`|No|HTTP server settings. See [llmvm-protocol](https://github.com/djandries/llmvm/tree/master/protocol#http-server-configuration) for details.|
 
-### Hugging Face custom endpoints
+### Hugging Face and OpenAI custom endpoints
 
 Custom hosted endpoints may be used by supplying the prefix `endpoint=`, followed by the endpoint
 URL in the model name component of the model ID.
 
-For example, the model ID could be `outsource/huggingface-text/endpoint=https://yourendpointhere`.
+For example, the model ID could be `outsource/huggingface-text/endpoint=https://yourendpointhere` for HuggingFace, or `outsource/openai-chat/model_id/endpoint=https://yourendpointhere` for OpenAI.
 
 ## License
 
