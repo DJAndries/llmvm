@@ -2,3 +2,4 @@ target
 .env
 .helix
 .llmvm
+Cargo.lock
