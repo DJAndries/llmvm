@@ -6,6 +6,7 @@
 //! - Hugging Face (text interface)
 
 mod huggingface;
+mod ollama;
 mod openai;
 mod util;
 
@@ -57,6 +58,8 @@ enum Provider {
     OpenAIChat,
     #[strum(serialize = "huggingface-text")]
     HuggingFaceText,
+    #[strum(serialize = "ollama-text")]
+    OllamaText,
 }
 
 impl Into<ProtocolError> for OutsourceError {
@@ -84,6 +87,7 @@ impl Into<ProtocolError> for OutsourceError {
 pub struct OutsourceConfig {
     pub openai_api_key: Option<String>,
     pub huggingface_api_key: Option<String>,
+    pub ollama_endpoint: Option<String>,
 }
 
 impl ConfigExampleSnippet for OutsourceConfig {
@@ -92,7 +96,10 @@ impl ConfigExampleSnippet for OutsourceConfig {
 # openai_api_key = ""
 
 # API key for Hugging Face
-# huggingface_api_key = """#
+# huggingface_api_key = ""
+
+# ollama_endpoint
+# ollama_endpoint = """#
             .into()
     }
 }
@@ -144,6 +151,14 @@ impl Backend for OutsourceBackend {
                     )
                     .await
                 }
+                Provider::OllamaText => {
+                    ollama::generate(
+                        request,
+                        model_description,
+                        self.config.ollama_endpoint.as_ref(),
+                    )
+                    .await
+                }
             }
         }
         .await
@@ -174,6 +189,14 @@ impl Backend for OutsourceBackend {
                             .map_err(|e| e.into())
                     })
                     .boxed())
+                }
+                Provider::OllamaText => {
+                    ollama::generate_stream(
+                        request,
+                        model_description,
+                        self.config.ollama_endpoint.as_ref(),
+                    )
+                    .await
                 }
             }
         }
