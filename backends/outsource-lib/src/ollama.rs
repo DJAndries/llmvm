@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use crate::util::check_status_code;
 use crate::Result;
 
-const OLLAMA_ENDPOINT: &str = "http://127.0.0.1:11434/api/generate";
+const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:11434/api/generate";
 
 const NUM_PREDICT_KEY: &str = "num_predict";
 const TEMPLATE: &str = "{{ .Prompt }}";
@@ -40,7 +40,7 @@ pub async fn send_request(
 ) -> Result<reqwest::Response> {
     let url = endpoint
         .map(|v| v.as_str())
-        .unwrap_or_else(|| OLLAMA_ENDPOINT);
+        .unwrap_or_else(|| DEFAULT_ENDPOINT);
     let url = Url::parse(url).unwrap();
 
     let mut parameters = request.model_parameters.take().unwrap_or_default();

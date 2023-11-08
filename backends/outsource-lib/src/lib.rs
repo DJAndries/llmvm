@@ -98,7 +98,7 @@ impl ConfigExampleSnippet for OutsourceConfig {
 # API key for Hugging Face
 # huggingface_api_key = ""
 
-# ollama_endpoint
+# Endpoint for ollama (defaults to http://127.0.0.1:11434/api/generate)
 # ollama_endpoint = """#
             .into()
     }
