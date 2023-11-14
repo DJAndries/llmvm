@@ -51,7 +51,7 @@ To install the outsource backend, run
 cargo install llmvm-outsource
 ```
 
-See [Configuration](https://github.com/DJAndries/llmvm/tree/master/backends/outsource) in llmvm-outsource for configuring OpenAI/Ollama endpoints/API keys.
+See [Configuration](https://github.com/DJAndries/llmvm/tree/master/backends/outsource#configuration) in llmvm-outsource for configuring OpenAI/Ollama endpoints/API keys.
 
 Currently, the default model preset is `gpt-3.5-codegen` which uses the outsource backend.
 
