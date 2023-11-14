@@ -54,7 +54,7 @@ Core and frontends will typically expose optional HTTP client configuration. Her
 |Key|Required?|Description|
 |--|--|--|
 |`base_url`|Yes|Base URL/prefix for all outgoing requests.|
-|`api_key`|No|API key to append to requests. The key will be inserted into the `X-API-Key` header.|
+|`api_key`|If llmvm server has API key set|HTTP server API key to append to llmvm requests. The key will be inserted into the `X-API-Key` header.|
 |`timeout_secs`|No|Timeout for client requests in seconds.|
 
 ### HTTP server configuration

@@ -31,7 +31,7 @@ Manually adding context to code completion requests:
 
 [![asciicast](https://asciinema.org/a/601427.svg)](https://asciinema.org/a/601427)
 
-## Installation
+## Quick start
 
 Install this application using `cargo`.
 
@@ -44,8 +44,16 @@ The llmvm core must be installed. If you have not done so, the core may be insta
 cargo install llmvm-core
 ```
 
-A backend must be installed and configured. The [llmvm-outsource](https://github.com/DJAndries/llmvm/tree/master/backends/outsource) is recommended for OpenAI requests.
-Currently, the default model preset is `gpt-3.5-codegen` which uses this backend.
+A backend must be installed and configured. The [llmvm-outsource](https://github.com/DJAndries/llmvm/tree/master/backends/outsource) is recommended for OpenAI/HuggingFace/Ollama requests.
+
+To install the outsource backend, run 
+```
+cargo install llmvm-outsource
+```
+
+See [Configuration](https://github.com/DJAndries/llmvm/tree/master/backends/outsource) in llmvm-outsource for configuring OpenAI/Ollama endpoints/API keys.
+
+Currently, the default model preset is `gpt-3.5-codegen` which uses the outsource backend.
 
 ## Usage
 
@@ -54,9 +62,13 @@ Your code editor must be configured to use `llmvm-codeassist` as the primary LSP
 Here is an example of a Helix `languages.toml` configuration for the Rust language:
 
 ```
+[language-server.llmvm-codeassist-rust]
+command = "llmvm-codeassist"
+args = ["rust-analyzer"]
+
 [[language]]
 name = "rust"
-language-server = { command = "llmvm-codeassist", args = ["rust-analyzer"] }
+language-servers = [ "llmvm-codeassist-rust" ]
 ```
 
 Code completion commands can be called by selecting uncompleted code, and invoking the code actions menu.

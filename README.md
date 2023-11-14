@@ -27,7 +27,7 @@ The [protocol](https://github.com/djandries/llmvm/tree/master/protocol) acts as 
   - [chat](https://github.com/djandries/llmvm/tree/master/frontends/chat): A CLI chat interface
 - [Core](https://github.com/djandries/llmvm/tree/master/core)
 - Backends
-  - [outsource](https://github.com/djandries/llmvm/tree/master/backends/outsource): Forwards generation requests to known hosted language model providers such as OpenAI and Hugging Face
+  - [outsource](https://github.com/djandries/llmvm/tree/master/backends/outsource): Forwards generation requests to known hosted language model providers such as OpenAI, Hugging Face and Ollama.
   - [llmrs](https://github.com/djandries/llmvm/tree/master/backends/llmrs): Uses the [llm](https://github.com/rustformers/llm) crate to process generation requests. Supported models include LLaMA, GPT-2, GPT-J and more.
 
 ### IPC details

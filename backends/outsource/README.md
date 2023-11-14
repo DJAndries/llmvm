@@ -10,6 +10,7 @@ Supported providers:
 
 - OpenAI (text & chat interface)
 - Hugging Face (text interface)
+- Ollama
 
 Example of an llmvm model ID for this backend: `outsource/openai-chat/gpt-3.5-turbo`
 
@@ -41,7 +42,7 @@ Run the backend executable to generate a configuration file at:
 |--|--|--|
 |`openai_api_key`|If using OpenAI|API key for OpenAI requests.|
 |`huggingface_api_key`|If using Hugging Face|API key for Hugging Face requests.|
-|`ollama_endpoint`|No|Endpoint for ollama requests (defaults to `http://127.0.0.1:11434/api/generate`)|
+|`ollama_endpoint`|If using Ollama|Endpoint for Ollama requests (defaults to `http://127.0.0.1:11434/api/generate`)|
 |`tracing_directive`|No|Logging directive/level for [tracing](https://github.com/tokio-rs/tracing)|
 |`stdio_server`|No|Stdio server settings. See [llmvm-protocol](https://github.com/djandries/llmvm/tree/master/protocol#stdio-server-configuration) for details.|
 |`http_server`|No|HTTP server settings. See [llmvm-protocol](https://github.com/djandries/llmvm/tree/master/protocol#http-server-configuration) for details.|
