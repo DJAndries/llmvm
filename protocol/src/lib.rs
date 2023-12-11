@@ -212,29 +212,27 @@ impl FromStr for ModelDescription {
         if tokens.len() < 3 || tokens[..2].iter().any(|v| v.is_empty()) {
             return Err(());
         }
-        let maybe_endpoint = if tokens.len() >= 3 {
-            let tail = tokens[3..].join("/");
-            // TODO: Maybe use the url crate for query string parsing? (see: https://docs.rs/url/1.4.0/url/form_urlencoded/fn.parse.html)
-            let endpoint_prefix = "endpoint=";
-            if tail.starts_with(&endpoint_prefix) {
-                let parse_url_result = Url::parse(&tail[endpoint_prefix.len()..]);
-                if parse_url_result.is_ok() {
-                    Some(parse_url_result.unwrap())
-                } else {
-                    return Err(());
-                }
+        let mut endpoint = None;
+        let endpoint_start = "endpoint=";
+        if let Some(endpoint_idx) = s.rfind(&endpoint_start) {
+            let endpoint_str = &s[endpoint_idx + endpoint_start.len()..];
+            let parse_url_result = Url::parse(endpoint_str);
+            if parse_url_result.is_ok() {
+                endpoint = Some(parse_url_result.unwrap());
             } else {
-                None
+                return Err(());
             }
-        } else {
-            None
-        };
-        let mut tokens_iter = tokens.into_iter();
+        }
+        let endpoint_idx = tokens
+            .iter()
+            .rposition(|t| t.contains(&endpoint_start))
+            .unwrap_or(tokens.len());
+        let mut tokens_iter = tokens.into_iter().take(endpoint_idx);
         Ok(Self {
             backend: tokens_iter.next().unwrap(),
             provider: tokens_iter.next().unwrap(),
-            model_name: tokens_iter.next().unwrap(),
-            endpoint: maybe_endpoint,
+            model_name: tokens_iter.collect::<Vec<String>>().join("/"),
+            endpoint,
         })
     }
 }

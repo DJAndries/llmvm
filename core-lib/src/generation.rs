@@ -120,10 +120,8 @@ impl LLMVMCore {
         let model = parameters
             .model
             .ok_or(CoreError::MissingParameter("model"))?;
-        let model_description = ModelDescription::from_str(&model)
-            .map_err(|_| CoreError::ModelDescriptionParse)
-            .unwrap();
-
+        let model_description =
+            ModelDescription::from_str(&model).map_err(|_| CoreError::ModelDescriptionParse)?;
         let is_chat_model = model_description.is_chat_model();
         let prompt_parameters = parameters
             .prompt_parameters
