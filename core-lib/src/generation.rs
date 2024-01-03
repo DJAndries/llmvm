@@ -8,7 +8,8 @@ use llmvm_protocol::{
 };
 use serde_json::Value;
 
-use tracing::{debug, info};
+use time::Error;
+use tracing::{debug, error, info};
 
 use crate::error::CoreError;
 use crate::presets::load_preset;
@@ -121,7 +122,6 @@ impl LLMVMCore {
             .ok_or(CoreError::MissingParameter("model"))?;
         let model_description =
             ModelDescription::from_str(&model).map_err(|_| CoreError::ModelDescriptionParse)?;
-
         let is_chat_model = model_description.is_chat_model();
         let prompt_parameters = parameters
             .prompt_parameters

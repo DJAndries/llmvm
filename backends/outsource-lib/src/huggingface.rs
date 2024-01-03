@@ -8,8 +8,6 @@ use crate::{OutsourceError, Result};
 
 const DEFAULT_HUGGINGFACE_API_HOST: &str = "https://api-inference.huggingface.co";
 
-const CUSTOM_ENDPOINT_PREFIX: &str = "endpoint=";
-
 const MODELS_ENDPOINT: &str = "models/";
 
 const MAX_TOKENS_KEY: &str = "max_new_tokens";
@@ -36,12 +34,8 @@ pub async fn generate(
     model_description: ModelDescription,
     api_key: &str,
 ) -> Result<BackendGenerationResponse> {
-    let url = if model_description
-        .model_name
-        .starts_with(CUSTOM_ENDPOINT_PREFIX)
-    {
-        Url::parse(&model_description.model_name[CUSTOM_ENDPOINT_PREFIX.len()..])
-            .map_err(|_| OutsourceError::HostURLParse)?
+    let url = if model_description.endpoint.is_some() {
+        model_description.endpoint.unwrap()
     } else {
         Url::parse(DEFAULT_HUGGINGFACE_API_HOST)
             .expect("url should parse")

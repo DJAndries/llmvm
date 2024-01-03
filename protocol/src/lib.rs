@@ -18,6 +18,7 @@ use std::{
     fmt::{Display, Formatter},
     str::FromStr,
 };
+use url::Url;
 
 pub const CHAT_MODEL_PROVIDER_SUFFIX: &str = "-chat";
 
@@ -190,6 +191,8 @@ pub struct ModelDescription {
     pub provider: String,
     /// Name of the model. i.e. `gpt-3.5-turbo`
     pub model_name: String,
+    /// Endpoint (If any)
+    pub endpoint: Option<Url>,
 }
 
 impl ModelDescription {
@@ -206,14 +209,30 @@ impl FromStr for ModelDescription {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let split = s.split("/");
         let tokens: Vec<String> = split.map(|v| v.to_string()).collect();
-        if tokens.len() < 3 || tokens.iter().any(|v| v.is_empty()) {
+        if tokens.len() < 3 || tokens[..2].iter().any(|v| v.is_empty()) {
             return Err(());
         }
-        let mut tokens_iter = tokens.into_iter();
+        let mut endpoint = None;
+        let endpoint_start = "endpoint=";
+        if let Some(endpoint_idx) = s.rfind(&endpoint_start) {
+            let endpoint_str = &s[endpoint_idx + endpoint_start.len()..];
+            let parse_url_result = Url::parse(endpoint_str);
+            if parse_url_result.is_ok() {
+                endpoint = Some(parse_url_result.unwrap());
+            } else {
+                return Err(());
+            }
+        }
+        let endpoint_idx = tokens
+            .iter()
+            .rposition(|t| t.contains(&endpoint_start))
+            .unwrap_or(tokens.len());
+        let mut tokens_iter = tokens.into_iter().take(endpoint_idx);
         Ok(Self {
             backend: tokens_iter.next().unwrap(),
             provider: tokens_iter.next().unwrap(),
             model_name: tokens_iter.collect::<Vec<String>>().join("/"),
+            endpoint,
         })
     }
 }

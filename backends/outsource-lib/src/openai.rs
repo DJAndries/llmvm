@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::util::check_status_code;
 use crate::{OutsourceError, Result};
 
-const OPENAI_API_HOST: &str = "https://api.openai.com";
+const DEFAULT_OPENAI_API_HOST: &str = "https://api.openai.com";
 
 const CHAT_COMPLETION_ENDPOINT: &str = "/v1/chat/completions";
 const COMPLETION_ENDPOINT: &str = "/v1/completions";
@@ -73,10 +73,14 @@ async fn send_generate_request(
     } else {
         COMPLETION_ENDPOINT
     };
-    let url = Url::parse(OPENAI_API_HOST)
-        .expect("url should parse")
-        .join(endpoint)
-        .unwrap();
+    let url = if model_description.endpoint.is_some() {
+        model_description.endpoint.unwrap().join(endpoint).unwrap()
+    } else {
+        Url::parse(DEFAULT_OPENAI_API_HOST)
+            .expect("url should parse")
+            .join(endpoint)
+            .unwrap()
+    };
 
     let mut body = request.model_parameters.take().unwrap_or_default();
 
