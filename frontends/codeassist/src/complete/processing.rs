@@ -7,11 +7,11 @@ use llmvm_protocol::{
 };
 use serde_json::Value;
 use tokio::task::JoinError;
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::complete::{CompletedSnippet, PromptParameters};
 
-use super::{CodeCompleteTask, CompletingSnippet};
+use super::{CodeCompleteTask, CompletingSnippet, ContextSnippet};
 
 pub(super) struct IdentifiedGenerationResponse {
     pub id: usize,
@@ -21,6 +21,11 @@ pub(super) struct IdentifiedGenerationResponse {
 pub(super) struct IdentifiedGenerationResponseStream {
     pub id: usize,
     pub stream: NotificationStream<CoreResponse>,
+}
+
+#[derive(Default)]
+pub(super) struct ProcessResult {
+    pub typedef_infer_success: bool,
 }
 
 impl Stream for IdentifiedGenerationResponseStream {
@@ -108,14 +113,8 @@ impl CodeCompleteTask {
         Ok(())
     }
 
-    pub(super) async fn process(&mut self) -> Result<()> {
-        self.content_manager
-            .lock()
-            .await
-            .maybe_load_file(&self.code_location.uri)
-            .await?;
-
-        let typedef_context_snippets = if self.supports_type_definitions {
+    async fn infer_typedef_context(&mut self) -> Result<Vec<ContextSnippet>> {
+        Ok(if self.supports_type_definitions {
             let symbols = if !self.supports_semantic_tokens {
                 debug!("getting symbol positions via semantic tokens");
                 self.get_relevant_symbol_positions().await?
@@ -136,6 +135,28 @@ impl CodeCompleteTask {
                 .await?
         } else {
             Default::default()
+        })
+    }
+
+    pub(super) async fn process(&mut self) -> Result<ProcessResult> {
+        self.content_manager
+            .lock()
+            .await
+            .maybe_load_file(&self.code_location.uri)
+            .await?;
+
+        let mut process_result = ProcessResult::default();
+
+        let typedef_context_snippets = match self.infer_typedef_context().await {
+            Ok(result) => {
+                process_result.typedef_infer_success = true;
+                result
+            }
+            Err(e) => {
+                error!("failed to infer typedef context: {e}");
+                process_result.typedef_infer_success = false;
+                Default::default()
+            }
         };
 
         let random_context_snippets = self.get_random_context_snippets().await?;
@@ -170,6 +191,6 @@ impl CodeCompleteTask {
             self.process_whole(presets, prompt_params).await?;
         }
 
-        Ok(())
+        Ok(process_result)
     }
 }

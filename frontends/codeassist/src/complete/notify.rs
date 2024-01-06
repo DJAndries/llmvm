@@ -6,7 +6,7 @@ use lsp_types::{
 };
 use tower::Service;
 
-use super::CodeCompleteTask;
+use super::{processing::ProcessResult, CodeCompleteTask};
 use crate::{lsp::LspMessage, service::LspMessageInfo};
 
 const PROGRESS_TOKEN_PREFIX: &str = "llmvm/complete/";
@@ -33,7 +33,7 @@ impl CodeCompleteTask {
     pub(super) async fn notify_user(
         &mut self,
         token: &ProgressToken,
-        complete_result: Option<Result<()>>,
+        complete_result: Option<Result<ProcessResult>>,
     ) -> Result<()> {
         let progresses = match complete_result.as_ref() {
             None => vec![
@@ -51,10 +51,17 @@ impl CodeCompleteTask {
             ],
             Some(complete_result) => {
                 *self.notify_complete_status.lock().await = true;
+
                 let message = match complete_result {
-                    Ok(()) => "Generation complete".to_string(),
+                    Ok(result) => if result.typedef_infer_success {
+                        "Generation complete"
+                    } else {
+                        "Generation complete, but type definition inference failed (see logs)"
+                    }
+                    .to_string(),
                     Err(e) => format!("Generation failed: {e}"),
                 };
+
                 vec![
                     WorkDoneProgress::Report(WorkDoneProgressReport {
                         message: Some(message.clone()),

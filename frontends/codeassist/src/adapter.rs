@@ -104,7 +104,11 @@ impl LspAdapter {
                 .clone()
                 .ok_or(anyhow!("code action request does not have params"))?,
         )?;
-        let mut result = message.get_result::<CodeActionResponse>()?;
+        let result_value = message.get_result::<serde_json::Value>()?;
+        let mut result = match result_value.is_null() {
+            true => Vec::new(),
+            false => serde_json::from_value::<CodeActionResponse>(result_value)?,
+        };
         let location_args = Some(vec![serde_json::to_value(Location::new(
             request_params.text_document.uri.clone(),
             request_params.range,

@@ -1,6 +1,6 @@
 [package]
 name = "llmvm-codeassist"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A LLM-powered code assistant that automatically retrieves context (i.e. type definitions) from a Language Server Protocol server."
 authors.workspace = true
