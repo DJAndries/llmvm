@@ -8,8 +8,7 @@ use llmvm_protocol::{
 };
 use serde_json::Value;
 
-use time::Error;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use crate::error::CoreError;
 use crate::presets::load_preset;

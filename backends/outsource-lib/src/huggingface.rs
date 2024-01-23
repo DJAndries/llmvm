@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::util::check_status_code;
-use crate::{OutsourceError, Result};
+use crate::Result;
 
 const DEFAULT_HUGGINGFACE_API_HOST: &str = "https://api-inference.huggingface.co";
 

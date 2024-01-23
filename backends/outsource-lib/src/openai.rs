@@ -64,6 +64,7 @@ struct ChatCompletionChoiceMessage {
 async fn send_generate_request(
     mut request: BackendGenerationRequest,
     model_description: ModelDescription,
+    config_openai_endpoint: Option<&str>,
     api_key: &str,
     is_chat_model: bool,
     should_stream: bool,
@@ -76,7 +77,7 @@ async fn send_generate_request(
     let url = if model_description.endpoint.is_some() {
         model_description.endpoint.unwrap().join(endpoint).unwrap()
     } else {
-        Url::parse(DEFAULT_OPENAI_API_HOST)
+        Url::parse(config_openai_endpoint.unwrap_or(DEFAULT_OPENAI_API_HOST))
             .expect("url should parse")
             .join(endpoint)
             .unwrap()
@@ -118,11 +119,19 @@ async fn send_generate_request(
 pub async fn generate(
     request: BackendGenerationRequest,
     model_description: ModelDescription,
+    config_openai_endpoint: Option<&str>,
     api_key: &str,
 ) -> Result<BackendGenerationResponse> {
     let is_chat_model = model_description.is_chat_model();
-    let response =
-        send_generate_request(request, model_description, api_key, is_chat_model, false).await?;
+    let response = send_generate_request(
+        request,
+        model_description,
+        config_openai_endpoint,
+        api_key,
+        is_chat_model,
+        false,
+    )
+    .await?;
     let response = if is_chat_model {
         let mut body: ChatCompletionResponse = response.json().await?;
         let choice = body.choices.pop().ok_or(OutsourceError::NoTextInResponse)?;
@@ -165,11 +174,19 @@ fn extract_response_from_stream_event(
 pub async fn generate_stream(
     request: BackendGenerationRequest,
     model_description: ModelDescription,
+    config_openai_endpoint: Option<&str>,
     api_key: &str,
 ) -> Result<NotificationStream<BackendGenerationResponse>> {
     let is_chat_model = model_description.is_chat_model();
-    let response =
-        send_generate_request(request, model_description, api_key, is_chat_model, true).await?;
+    let response = send_generate_request(
+        request,
+        model_description,
+        config_openai_endpoint,
+        api_key,
+        is_chat_model,
+        true,
+    )
+    .await?;
     let mut response_stream = response.bytes_stream();
     Ok(stream! {
         let mut buffer = VecDeque::new();

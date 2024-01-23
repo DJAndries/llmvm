@@ -1,6 +1,6 @@
 [package]
 name = "llmvm-llmrs-lib"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "The library for the llmrs backend for llmvm."
 authors.workspace = true
@@ -12,7 +12,7 @@ keywords = ["llama", "llm", "ai"]
 [dependencies]
 futures = { workspace = true }
 llm = { git = "https://github.com/rustformers/llm", rev = "7f13bb90f678e2bdf70d221f1b790fab55cb4d7f" }
-llmvm-protocol = { version = "1.0", path = "../../protocol" }
+llmvm-protocol = { version = "2.0", path = "../../protocol" }
 llmvm-util = { version = "0.1", path = "../../util" }
 thiserror = { workspace = true }
 rand = { workspace = true }

@@ -21,6 +21,7 @@ use std::{
 use url::Url;
 
 pub const CHAT_MODEL_PROVIDER_SUFFIX: &str = "-chat";
+const CUSTOM_ENDPOINT_PREFIX: &str = "endpoint=";
 
 /// Metadata for a thread.
 #[derive(Clone, Serialize, Deserialize)]
@@ -191,7 +192,7 @@ pub struct ModelDescription {
     pub provider: String,
     /// Name of the model. i.e. `gpt-3.5-turbo`
     pub model_name: String,
-    /// Endpoint (If any)
+    /// Custom endpoint (if any)
     pub endpoint: Option<Url>,
 }
 
@@ -209,29 +210,27 @@ impl FromStr for ModelDescription {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let split = s.split("/");
         let tokens: Vec<String> = split.map(|v| v.to_string()).collect();
-        if tokens.len() < 3 || tokens[..2].iter().any(|v| v.is_empty()) {
+        if tokens.len() < 3 || tokens[..3].iter().any(|v| v.is_empty()) {
             return Err(());
         }
+        let mut tokens_iter = tokens.into_iter();
+        let backend = tokens_iter.next().unwrap();
+        let provider = tokens_iter.next().unwrap();
+        let mut model_name = tokens_iter.collect::<Vec<String>>().join("/");
         let mut endpoint = None;
-        let endpoint_start = "endpoint=";
-        if let Some(endpoint_idx) = s.rfind(&endpoint_start) {
-            let endpoint_str = &s[endpoint_idx + endpoint_start.len()..];
-            let parse_url_result = Url::parse(endpoint_str);
-            if parse_url_result.is_ok() {
-                endpoint = Some(parse_url_result.unwrap());
-            } else {
-                return Err(());
+        if let Some(endpoint_idx) = model_name.rfind(CUSTOM_ENDPOINT_PREFIX) {
+            let endpoint_str = &model_name[endpoint_idx + CUSTOM_ENDPOINT_PREFIX.len()..];
+            endpoint = Some(Url::parse(endpoint_str).map_err(|_| ())?);
+            model_name = model_name[..endpoint_idx].to_string();
+            if model_name.ends_with("/") {
+                model_name.pop();
             }
         }
-        let endpoint_idx = tokens
-            .iter()
-            .rposition(|t| t.contains(&endpoint_start))
-            .unwrap_or(tokens.len());
-        let mut tokens_iter = tokens.into_iter().take(endpoint_idx);
+
         Ok(Self {
-            backend: tokens_iter.next().unwrap(),
-            provider: tokens_iter.next().unwrap(),
-            model_name: tokens_iter.collect::<Vec<String>>().join("/"),
+            backend,
+            provider,
+            model_name,
             endpoint,
         })
     }
@@ -239,6 +238,22 @@ impl FromStr for ModelDescription {
 
 impl Display for ModelDescription {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}/{}", self.backend, self.provider, self.model_name)
+        if let Some(endpoint) = self.endpoint.as_ref() {
+            if self.model_name.is_empty() {
+                write!(
+                    f,
+                    "{}/{}/{}{}",
+                    self.backend, self.provider, CUSTOM_ENDPOINT_PREFIX, endpoint
+                )
+            } else {
+                write!(
+                    f,
+                    "{}/{}/{}/{}{}",
+                    self.backend, self.provider, self.model_name, CUSTOM_ENDPOINT_PREFIX, endpoint
+                )
+            }
+        } else {
+            write!(f, "{}/{}/{}", self.backend, self.provider, self.model_name)
+        }
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "llmvm-codeassist"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "A LLM-powered code assistant that automatically retrieves context (i.e. type definitions) from a Language Server Protocol server."
 authors.workspace = true
@@ -12,7 +12,7 @@ keywords = ["llm", "ai", "code", "assistant", "lsp"]
 [dependencies]
 anyhow = { workspace = true }
 futures = { workspace = true }
-llmvm-protocol = { version = "1.0", path = "../../protocol", features = ["stdio-client", "http-client"] }
+llmvm-protocol = { version = "2.0", path = "../../protocol", features = ["stdio-client", "http-client"] }
 llmvm-util = { version = "0.1", path = "../../util", features = ["config", "logging"] }
 lsp-types = "0.94"
 tokio = { workspace = true, features = ["full"] }

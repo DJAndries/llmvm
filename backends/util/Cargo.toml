@@ -1,6 +1,6 @@
 [package]
 name = "llmvm-backend-util"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Utility functions for llmvm backends."
 authors.workspace = true
@@ -9,6 +9,6 @@ license.workspace = true
 
 [dependencies]
 clap = { version = "4.1", features = ["derive"] }
-llmvm-protocol = { version = "1.0", path = "../../protocol", features = ["http-server", "stdio-server"] }
+llmvm-protocol = { version = "2.0", path = "../../protocol", features = ["http-server", "stdio-server"] }
 serde_json = "1.0"
 tracing = "0.1"

@@ -22,7 +22,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use strum_macros::{Display, EnumString};
 use thiserror::Error;
-use util::get_api_key;
+use util::{get_api_key, get_openai_api_key};
 
 pub type Result<T> = std::result::Result<T, OutsourceError>;
 
@@ -88,6 +88,7 @@ pub struct OutsourceConfig {
     pub openai_api_key: Option<String>,
     pub huggingface_api_key: Option<String>,
     pub ollama_endpoint: Option<String>,
+    pub openai_endpoint: Option<String>,
 }
 
 impl ConfigExampleSnippet for OutsourceConfig {
@@ -99,7 +100,11 @@ impl ConfigExampleSnippet for OutsourceConfig {
 # huggingface_api_key = ""
 
 # Endpoint for ollama (defaults to http://127.0.0.1:11434/api/generate)
-# ollama_endpoint = """#
+# ollama_endpoint = ""
+
+# Endpoint for OpenAI, only specify if using a custom OpenAI-compatible
+# server (i.e. fastchat)
+# openai_endpoint = """#
             .into()
     }
 }
@@ -136,10 +141,17 @@ impl Backend for OutsourceBackend {
             let (model_description, provider) = Self::get_model_description_and_provider(&request)?;
             match provider {
                 Provider::OpenAIText | Provider::OpenAIChat => {
+                    let api_key = get_openai_api_key(
+                        self.config.openai_api_key.as_deref(),
+                        self.config.openai_endpoint.is_some(),
+                        &model_description,
+                    )?;
+
                     openai::generate(
                         request,
                         model_description,
-                        get_api_key(self.config.openai_api_key.as_ref())?,
+                        self.config.openai_endpoint.as_deref(),
+                        api_key,
                     )
                     .await
                 }
@@ -147,7 +159,7 @@ impl Backend for OutsourceBackend {
                     huggingface::generate(
                         request,
                         model_description,
-                        get_api_key(self.config.huggingface_api_key.as_ref())?,
+                        get_api_key(self.config.huggingface_api_key.as_deref())?,
                     )
                     .await
                 }
@@ -173,16 +185,23 @@ impl Backend for OutsourceBackend {
             let (model_description, provider) = Self::get_model_description_and_provider(&request)?;
             match provider {
                 Provider::OpenAIText | Provider::OpenAIChat => {
+                    let api_key = get_openai_api_key(
+                        self.config.openai_api_key.as_deref(),
+                        self.config.openai_endpoint.is_some(),
+                        &model_description,
+                    )?;
+
                     openai::generate_stream(
                         request,
                         model_description,
-                        get_api_key(self.config.openai_api_key.as_ref())?,
+                        self.config.openai_endpoint.as_deref(),
+                        api_key,
                     )
                     .await
                 }
                 Provider::HuggingFaceText => {
                     let api_key =
-                        get_api_key(self.config.huggingface_api_key.as_ref())?.to_string();
+                        get_api_key(self.config.huggingface_api_key.as_deref())?.to_string();
                     Ok(once(async move {
                         huggingface::generate(request, model_description, &api_key)
                             .await
