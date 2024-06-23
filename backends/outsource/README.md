@@ -9,8 +9,9 @@ generation requests to known hosted language model providers.
 Supported providers:
 
 - OpenAI (text & chat interface)
+- Anthropic (chat interface)
 - Hugging Face (text interface)
-- Ollama
+- Ollama (text interface)
 
 Example of an llmvm model ID for this backend: `outsource/openai-chat/gpt-3.5-turbo`
 
@@ -42,6 +43,7 @@ Run the backend executable to generate a configuration file at:
 |--|--|--|
 |`openai_api_key`|If using OpenAI|API key for OpenAI requests.|
 |`huggingface_api_key`|If using Hugging Face|API key for Hugging Face requests.|
+|`anthropic_api_key`|If using Anthropic|API key for Anthropic requests.|
 |`ollama_endpoint`|If using Ollama|Endpoint for Ollama requests (defaults to `http://127.0.0.1:11434/api/generate`)|
 |`openai_endpoint`|If using a custom OpenAI server|Custom endpoint for all OpenAI requests. Supports any OpenAI API compatible server (i.e. fastchat).|
 |`tracing_directive`|No|Logging directive/level for [tracing](https://github.com/tokio-rs/tracing)|

@@ -4,7 +4,10 @@
 //! Currently supported providers:
 //! - OpenAI (text and chat interface)
 //! - Hugging Face (text interface)
+//! - Anthropic (chat interface)
+//! - Ollama (text interface)
 
+mod anthropic;
 mod huggingface;
 mod ollama;
 mod openai;
@@ -60,6 +63,8 @@ enum Provider {
     HuggingFaceText,
     #[strum(serialize = "ollama-text")]
     OllamaText,
+    #[strum(serialize = "anthropic-chat")]
+    AnthropicChat,
 }
 
 impl Into<ProtocolError> for OutsourceError {
@@ -89,6 +94,7 @@ pub struct OutsourceConfig {
     pub huggingface_api_key: Option<String>,
     pub ollama_endpoint: Option<String>,
     pub openai_endpoint: Option<String>,
+    pub anthropic_api_key: Option<String>,
 }
 
 impl ConfigExampleSnippet for OutsourceConfig {
@@ -98,6 +104,9 @@ impl ConfigExampleSnippet for OutsourceConfig {
 
 # API key for Hugging Face
 # huggingface_api_key = ""
+
+# API key for Anthropic
+# anthropic_api_key = ""
 
 # Endpoint for ollama (defaults to http://127.0.0.1:11434/api/generate)
 # ollama_endpoint = ""
@@ -171,6 +180,14 @@ impl Backend for OutsourceBackend {
                     )
                     .await
                 }
+                Provider::AnthropicChat => {
+                    anthropic::generate(
+                        request,
+                        model_description,
+                        get_api_key(self.config.anthropic_api_key.as_deref())?,
+                    )
+                    .await
+                }
             }
         }
         .await
@@ -214,6 +231,14 @@ impl Backend for OutsourceBackend {
                         request,
                         model_description,
                         self.config.ollama_endpoint.as_ref(),
+                    )
+                    .await
+                }
+                Provider::AnthropicChat => {
+                    anthropic::generate_stream(
+                        request,
+                        model_description,
+                        get_api_key(self.config.anthropic_api_key.as_deref())?,
                     )
                     .await
                 }
