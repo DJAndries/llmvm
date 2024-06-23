@@ -1,0 +1,2 @@
+model = "outsource/openai-chat/gpt-4o"
+max_tokens = 2048
