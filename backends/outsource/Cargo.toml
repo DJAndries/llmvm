@@ -1,6 +1,6 @@
 [package]
 name = "llmvm-outsource"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2021"
 description = "An llmvm backend which sends text and chat generation requests to known hosted language model providers."
 authors.workspace = true
