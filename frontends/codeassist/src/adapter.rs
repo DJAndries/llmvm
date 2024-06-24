@@ -17,7 +17,10 @@ use tracing::{debug, error};
 use crate::{
     complete::{CodeCompleteTask, HashableLocation},
     content::ContentManager,
-    lsp::{LspMessage, CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID},
+    lsp::{
+        LspMessage, CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID,
+        NEW_CHAT_THREAD_COMMAND_ID,
+    },
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
     CodeAssistConfig,
 };
@@ -32,6 +35,8 @@ pub struct LspAdapter {
     server_capabilities: Option<Arc<ServerCapabilities>>,
 
     llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
+
+    current_thread_id: Arc<Mutex<Option<String>>>,
 
     root_uri: Option<Url>,
     complete_task_last_id: usize,
@@ -55,6 +60,7 @@ impl LspAdapter {
             passthrough_service,
             server_capabilities: None,
             llmvm_core_service: Arc::new(Mutex::new(llmvm_core_service)),
+            current_thread_id: Default::default(),
             root_uri: None,
             complete_task_last_id: 0,
             content_manager: Default::default(),
@@ -95,6 +101,7 @@ impl LspAdapter {
     }
 
     fn transform_code_action_response(
+        &self,
         origin_request: &JsonRpcRequest,
         message: &LspMessage,
     ) -> Result<Option<LspMessage>> {
@@ -123,6 +130,13 @@ impl LspAdapter {
             command: MANUAL_CONTEXT_ADD_COMMAND_ID.to_string(),
             arguments: location_args,
         }));
+        if self.config.use_chat_threads {
+            result.push(CodeActionOrCommand::Command(Command {
+                title: "Use new LLM chat thread".to_string(),
+                command: NEW_CHAT_THREAD_COMMAND_ID.to_string(),
+                arguments: Some(Vec::new()),
+            }));
+        }
         let mut message = message.clone();
         message.set_result(result)?;
         Ok(Some(message))
@@ -149,6 +163,7 @@ impl LspAdapter {
             .map(|v| v.0)
             .collect();
         self.complete_task_last_id += 1;
+        let current_thread_id = self.current_thread_id.clone();
         tokio::spawn(async move {
             let code_complete = CodeCompleteTask::new(
                 config,
@@ -160,6 +175,7 @@ impl LspAdapter {
                 code_location,
                 task_id,
                 random_context_locations,
+                current_thread_id,
             );
             code_complete.run().await.ok();
         });
@@ -192,7 +208,7 @@ impl LspAdapter {
         let result = match msg_info.origin_request {
             Some(origin_request) => match origin_request.method.as_str() {
                 CodeActionRequest::METHOD => {
-                    Self::transform_code_action_response(&origin_request, &msg_info.message)
+                    self.transform_code_action_response(&origin_request, &msg_info.message)
                 }
                 Initialize::METHOD => self.transform_initialize_response(&msg_info.message),
                 _ => Ok(None),
@@ -200,23 +216,24 @@ impl LspAdapter {
             None => match &msg_info.message.payload {
                 JsonRpcMessage::Request(req) => match req.method.as_str() {
                     ExecuteCommand::METHOD => {
-                        let command_result = msg_info
-                            .message
-                            .get_params::<ExecuteCommandParams>()
-                            .ok()
-                            .map(|params| {
-                                match params.command.as_str() {
+                        let command_result =
+                            match msg_info.message.get_params::<ExecuteCommandParams>().ok() {
+                                Some(params) => match params.command.as_str() {
                                     CODE_COMPLETE_COMMAND_ID => {
                                         self.handle_code_complete_command(params)
                                     }
                                     MANUAL_CONTEXT_ADD_COMMAND_ID => {
                                         self.handle_add_context_command(params)
                                     }
+                                    NEW_CHAT_THREAD_COMMAND_ID => {
+                                        *self.current_thread_id.lock().await = None;
+                                        Ok(())
+                                    }
                                     _ => Ok(()),
-                                }
-                                .map(|_| None)
-                            })
-                            .unwrap_or(Ok(None));
+                                },
+                                None => Ok(()),
+                            }
+                            .map(|_| None);
                         Ok(Some(LspMessage::new_response::<ExecuteCommand>(
                             command_result,
                             req.id.clone(),

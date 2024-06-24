@@ -54,18 +54,23 @@ impl Stream for IdentifiedGenerationResponseStream {
 impl CodeCompleteTask {
     async fn process_whole(&mut self, presets: Vec<String>, prompt_params: Value) -> Result<()> {
         let mut tasks = Vec::new();
+        let is_multiple_preset_request = presets.len() > 1;
         for preset in presets {
             let response_future = self
-                .send_generation_request(preset.clone(), prompt_params.clone(), false)
+                .send_generation_request(
+                    preset.clone(),
+                    prompt_params.clone(),
+                    false,
+                    is_multiple_preset_request,
+                )
                 .await;
             tasks.push(tokio::spawn(async move {
                 let response = response_future.await.map_err(|e| anyhow!(e))?;
                 match response {
                     ServiceResponse::Single(response) => match response {
-                        CoreResponse::Generation(response) => Ok(CompletedSnippet {
-                            preset,
-                            snippet: response.response,
-                        }),
+                        CoreResponse::Generation(response) => {
+                            Ok(CompletedSnippet { preset, response })
+                        }
                         _ => bail!("unexpected response from llmvm"),
                     },
                     _ => bail!("unexpected service response type from llmvm"),
@@ -90,9 +95,15 @@ impl CodeCompleteTask {
 
     async fn process_stream(&mut self, presets: Vec<String>, prompt_params: Value) -> Result<()> {
         let mut completing_snippets = Vec::new();
+        let is_multiple_preset_request = presets.len() > 1;
         for (id, preset) in presets.into_iter().enumerate() {
             let response = self
-                .send_generation_request(preset.clone(), prompt_params.clone(), true)
+                .send_generation_request(
+                    preset.clone(),
+                    prompt_params.clone(),
+                    true,
+                    is_multiple_preset_request,
+                )
                 .await
                 .await
                 .map_err(|e| anyhow!(e))?;

@@ -45,6 +45,7 @@ pub struct CodeAssistConfig {
     default_preset: String,
 
     stream_snippets: bool,
+    use_chat_threads: bool,
 }
 
 impl ConfigExampleSnippet for CodeAssistConfig {
@@ -62,6 +63,12 @@ impl ConfigExampleSnippet for CodeAssistConfig {
 
 # Stream completed code text to editor
 # stream_snippets = false
+
+# Stream completed code text to editor
+# stream_snippets = false
+
+# Use chat threads to keep context from previous requests
+# use_chat_threads = false
 
 # Stdio core client configuration
 # [stdio_core]
@@ -85,6 +92,7 @@ impl Default for CodeAssistConfig {
             prefer_insert_in_place: false,
             default_preset: DEFAULT_PRESET.to_string(),
             stream_snippets: false,
+            use_chat_threads: false,
         }
     }
 }

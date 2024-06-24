@@ -46,22 +46,24 @@ impl CodeCompleteTask {
         completed_snippets: Vec<CompletedSnippet>,
     ) -> Result<()> {
         let insert_in_place = self.config.prefer_insert_in_place && completed_snippets.len() == 1;
-        let mut snippets_text = completed_snippets
-            .into_iter()
-            .map(|completed_snippet| {
-                let snippet_text = completed_snippet
-                    .snippet
-                    .split("\n")
-                    .filter(|line| !line.starts_with(CODE_WRAP_MD_TOKEN))
-                    .collect::<Vec<&str>>()
-                    .join("\n");
-                match insert_in_place {
-                    false => Self::wrap_snippet(snippet_text, completed_snippet.preset),
-                    true => snippet_text,
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("");
+        let mut snippets_text = String::new();
+        for completed_snippet in completed_snippets {
+            if let Some(thread_id) = completed_snippet.response.thread_id {
+                *self.thread_id.clone().lock().await = Some(thread_id);
+            }
+            let snippet_text = completed_snippet
+                .response
+                .response
+                .split("\n")
+                .filter(|line| !line.starts_with(CODE_WRAP_MD_TOKEN))
+                .collect::<Vec<&str>>()
+                .join("\n");
+            snippets_text += match insert_in_place {
+                false => Self::wrap_snippet(snippet_text, completed_snippet.preset),
+                true => snippet_text,
+            }
+            .as_str();
+        }
         let (range, snippets_text) = match insert_in_place {
             false => {
                 snippets_text.push('\n');
@@ -167,7 +169,13 @@ impl CodeCompleteTask {
             };
             let real_position =
                 Position::new(start_position.line + total_line_offset, character_pos);
-            let text = response.response?.response;
+            let response = response.response?;
+
+            if let Some(thread_id) = response.thread_id {
+                *self.thread_id.lock().await = Some(thread_id);
+            }
+
+            let text = response.response;
             let filtered_text = self.update_offset_and_filter_text(offset, &text);
             self.apply_edit(
                 Range::new(real_position.clone(), real_position.clone()),

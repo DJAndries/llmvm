@@ -15,7 +15,7 @@ use lsp_types::{
 use tokio::sync::oneshot;
 
 use crate::{
-    lsp::{LspMessage, CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID},
+    lsp::{LspMessage, CODE_ASSIST_COMMAND_PREFIX},
     service::{LspMessageInfo, LspMessageService},
 };
 
@@ -110,8 +110,10 @@ impl LspInterceptor {
                 if let Ok(execute_params) = serde_json::from_value::<ExecuteCommandParams>(
                     request.params.clone().unwrap_or_default(),
                 ) {
-                    if [CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID]
-                        .contains(&execute_params.command.as_str())
+                    if execute_params
+                        .command
+                        .as_str()
+                        .starts_with(CODE_ASSIST_COMMAND_PREFIX)
                     {
                         if let Some(new_msg) =
                             self.adapter_service.call(message_info.clone()).await?

@@ -104,6 +104,7 @@ Run the codeassist executable to generate a configuration file at:
 |`default_preset`|No|Default llmvm model preset to use for code completion. Currently defaults to `gpt-3.5-codegen`.|
 |`prefer_insert_in_place`|No|If set to true, will replace selected text with completed text if a single-model code completion is performed.|
 |`stream_snippets`|No|Streams each generated token to the editor in real time.|
+|`use_chat_threads`|No|If set to true, chat threads will be used to provide context from previous requests. Note that results from requests that utilize multiple presets (via `ccpr`) will not be stored in the thread.|
 |`tracing_directive`|No|Logging directive/level for [tracing](https://github.com/tokio-rs/tracing)|
 |`stdio_core`|No|Stdio client configuration for communicated with llmvm core. See [llmvm-protocol](https://github.com/DJAndries/llmvm/tree/master/protocol#stdio-client-configuration) for details.|
 |`http_core`|No|HTTP client configuration for communicating with llmvm core. See [llmvm-protocol](https://github.com/DJAndries/llmvm/tree/master/protocol#http-client-configuration) for details.|
