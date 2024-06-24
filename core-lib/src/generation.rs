@@ -154,12 +154,21 @@ impl LLMVMCore {
             None => None,
         };
         if let Some(content) = prompt.system_prompt {
-            thread_messages
-                .get_or_insert_with(|| Vec::with_capacity(1))
-                .push(Message {
+            let messages = thread_messages.get_or_insert_with(|| Vec::with_capacity(1));
+            messages.retain(|message| {
+                if let MessageRole::System = message.role {
+                    false
+                } else {
+                    true
+                }
+            });
+            messages.insert(
+                0,
+                Message {
                     role: MessageRole::System,
                     content,
-                });
+                },
+            );
         }
 
         let thread_messages_to_save = match request.save_thread {
