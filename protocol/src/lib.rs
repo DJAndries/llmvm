@@ -126,7 +126,7 @@ pub struct BackendGenerationResponse {
 
 /// Parameters used for generation via core service.
 /// Can be saved in a preset and/or directly provided within the [`GenerationRequest`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct GenerationParameters {
     /// The id of the language model.
     /// The format of the id is `<backend name>/<model provider name>/<model name>`.
@@ -142,19 +142,6 @@ pub struct GenerationParameters {
     pub model_parameters: Option<Map<String, Value>>,
     /// Parameters for the prompt template.
     pub prompt_parameters: Option<Value>,
-}
-
-impl Default for GenerationParameters {
-    fn default() -> Self {
-        Self {
-            model: None,
-            prompt_template_id: None,
-            custom_prompt_template: None,
-            max_tokens: Some(2048),
-            model_parameters: None,
-            prompt_parameters: None,
-        }
-    }
 }
 
 /// Request for text generation via core service.

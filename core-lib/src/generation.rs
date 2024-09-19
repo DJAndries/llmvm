@@ -101,7 +101,7 @@ impl LLMVMCore {
         ModelDescription,
         Option<Vec<Message>>,
     )> {
-        let parameters = match &request.preset_id {
+        let mut parameters = match &request.preset_id {
             Some(preset_id) => {
                 let mut parameters = load_preset(&preset_id).await?;
                 if let Some(request_parameters) = request.parameters.clone() {
@@ -115,6 +115,10 @@ impl LLMVMCore {
                 .ok_or(CoreError::MissingParameters)?,
         };
         debug!("generation parameters: {:?}", parameters);
+
+        if parameters.max_tokens.is_none() {
+            parameters.max_tokens = Some(2048);
+        }
 
         let model = parameters
             .model
