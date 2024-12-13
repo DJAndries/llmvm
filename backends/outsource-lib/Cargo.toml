@@ -1,6 +1,6 @@
 [package]
 name = "llmvm-outsource-lib"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2021"
 description = "The library for the outsource backend for llmvm."
 authors.workspace = true

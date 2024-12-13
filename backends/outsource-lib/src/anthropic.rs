@@ -149,6 +149,7 @@ pub async fn generate_stream(
     let mut response_stream = response.bytes_stream();
     Ok(stream! {
         let mut buffer = VecDeque::new();
+        let mut skip_next_event_payload = false;
         while let Some(bytes_result) = response_stream.next().await {
             match bytes_result {
                 Err(e) => {
@@ -161,7 +162,6 @@ pub async fn generate_stream(
                 }
             }
 
-            let mut skip_next_event_payload = false;
             while let Some(linebreak_pos) = buffer.iter().position(|b| b == &b'\n') {
                 let line_bytes = buffer.drain(0..(linebreak_pos + 1)).collect::<Vec<_>>();
                 if let Ok(line) = std::str::from_utf8(&line_bytes) {
