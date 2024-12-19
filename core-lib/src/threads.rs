@@ -5,9 +5,10 @@ use std::{
 
 use llmvm_protocol::{GenerationRequest, Message, MessageRole, ThreadInfo};
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
+use notify::{RecommendedWatcher, Watcher};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::fs;
+use tokio::{fs, sync::mpsc};
 
 use crate::{error::CoreError, Result};
 
@@ -94,11 +95,23 @@ pub(super) async fn get_thread_infos() -> Result<Vec<ThreadInfo>> {
 }
 
 fn new_thread_id() -> String {
-    thread_rng()
+    let random_part: String = thread_rng()
         .sample_iter(&Alphanumeric)
         .take(8)
         .map(char::from)
-        .collect()
+        .collect();
+
+    let now = time::OffsetDateTime::now_local()
+        .expect("should be able to get current time at local offset");
+
+    format!(
+        "{}_{}",
+        now.format(
+            &time::format_description::parse("[year]-[month]-[day]_[hour]-[minute]").unwrap()
+        )
+        .unwrap(),
+        random_part
+    )
 }
 
 async fn save_thread(thread_id: &str, messages: Vec<Message>) -> Result<()> {
@@ -116,6 +129,7 @@ pub(super) async fn maybe_save_thread_messages_and_get_thread_id(
     Ok(match messages {
         Some(mut messages) => {
             messages.push(Message {
+                client_id: request.client_id.clone(),
                 role: MessageRole::Assistant,
                 content: new_text,
             });
@@ -138,4 +152,54 @@ pub(super) async fn get_thread_messages(thread_id: &str) -> Result<Vec<Message>>
             false => Vec::new(),
         },
     )
+}
+
+fn get_thread_messages_sync(thread_id: &str) -> Result<Vec<Message>> {
+    let thread_path = thread_path(thread_id)?;
+    Ok(match std::fs::exists(&thread_path).unwrap_or_default() {
+        true => serde_json::from_slice(&std::fs::read(&thread_path)?)?,
+        false => Vec::new(),
+    })
+}
+
+pub(super) async fn listen_on_thread(
+    thread_id: String,
+    client_id: String,
+) -> Result<(mpsc::UnboundedReceiver<Message>, RecommendedWatcher)> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // Get initial messages and store their count
+    let initial_messages = get_thread_messages(&thread_id).await?;
+    let mut last_count = initial_messages.len();
+
+    let thread_path = thread_path(&thread_id)?;
+
+    // Create a watcher with async configuration
+    let mut watcher = notify::recommended_watcher(
+        move |res: std::result::Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                if let notify::EventKind::Modify(_) = &event.kind {
+                    if let Ok(new_messages) = get_thread_messages_sync(&thread_id) {
+                        if new_messages.len() <= last_count {
+                            return;
+                        }
+                        // Send all new messages since last count
+                        for message in new_messages[last_count..].iter().cloned() {
+                            if let Some(msg_client_id) = &message.client_id {
+                                if &client_id == msg_client_id {
+                                    continue;
+                                }
+                            }
+                            let _ = tx.send(message);
+                        }
+                        last_count = new_messages.len();
+                    }
+                }
+            }
+        },
+    )?;
+
+    watcher.watch(&thread_path, notify::RecursiveMode::NonRecursive)?;
+
+    Ok((rx, watcher))
 }

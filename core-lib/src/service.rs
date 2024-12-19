@@ -12,7 +12,8 @@ use tracing::debug;
 use crate::{
     error::CoreError,
     threads::{
-        get_thread_infos, get_thread_messages, maybe_save_thread_messages_and_get_thread_id,
+        get_thread_infos, get_thread_messages, listen_on_thread,
+        maybe_save_thread_messages_and_get_thread_id,
     },
     LLMVMCore, PROJECT_DIR_NAME,
 };
@@ -70,7 +71,7 @@ impl Core for LLMVMCore {
                                 full_response.push_str(&response.response);
                                 yield Ok(GenerationResponse {
                                     response: response.response,
-                                    thread_id: None
+                                    thread_id: None,
                                 });
                             }
                             _ => yield Err(CoreError::UnexpectedServiceResponse.into())
@@ -120,5 +121,26 @@ impl Core for LLMVMCore {
         get_file_path(DirType::Config, "", true);
         get_file_path(DirType::Weights, "", true);
         Ok(())
+    }
+
+    async fn listen_on_thread(
+        &self,
+        thread_id: String,
+        client_id: String,
+    ) -> Result<NotificationStream<Option<Message>>, ProtocolError> {
+        async {
+            let (mut rx, watcher) = listen_on_thread(thread_id, client_id.clone()).await?;
+            Ok(stream! {
+                // Send dummy None value so that the client can immediately access and monitor the notification stream
+                yield Ok(None);
+                while let Some(message) = rx.recv().await {
+                    yield Ok(Some(message));
+                }
+                drop(watcher);
+            }
+            .boxed())
+        }
+        .await
+        .map_err(|e: CoreError| e.into())
     }
 }

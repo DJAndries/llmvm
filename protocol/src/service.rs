@@ -12,7 +12,7 @@ pub use multilink::{BoxedService, ServiceError, ServiceFuture};
 
 use crate::{
     Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
-    GenerationResponse, Message, ThreadInfo,
+    GenerationResponse, ListenOnThreadRequest, Message, ThreadInfo,
 };
 
 /// Enum containing all types of backend requests.
@@ -38,6 +38,7 @@ pub enum CoreRequest {
     GetAllThreadInfos,
     GetThreadMessages { id: String },
     InitProject,
+    ListenOnThread(ListenOnThreadRequest),
 }
 
 /// Enum containing all types of core responses.
@@ -49,6 +50,7 @@ pub enum CoreResponse {
     GetAllThreadInfos(Vec<ThreadInfo>),
     GetThreadMessages(Vec<Message>),
     InitProject,
+    ListenOnThread(Option<Message>),
 }
 
 /// Service that receives [`BackendRequest`] values,
@@ -183,6 +185,15 @@ where
                 CoreRequest::InitProject => core
                     .init_project()
                     .map(|_| ServiceResponse::Single(CoreResponse::InitProject)),
+                CoreRequest::ListenOnThread(req) => core
+                    .listen_on_thread(req.thread_id, req.client_id)
+                    .await
+                    .map(|s| {
+                        ServiceResponse::Multiple(
+                            s.map(|resp| resp.map(|resp| CoreResponse::ListenOnThread(resp)))
+                                .boxed(),
+                        )
+                    }),
             }?)
         })
     }

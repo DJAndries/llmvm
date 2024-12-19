@@ -73,6 +73,11 @@ pub fn get_file_path(dir_type: DirType, filename: &str, will_create: bool) -> Op
     get_home_file_path(dir_type, filename)
 }
 
+pub fn generate_client_id(prefix: &str) -> String {
+    let random_hex = format!("{:x}", rand::random::<u32>());
+    format!("{}-{}", prefix, random_hex)
+}
+
 #[cfg(feature = "logging")]
 pub mod logging {
     use std::str::FromStr;

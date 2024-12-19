@@ -19,6 +19,7 @@ const GENERATE_STREAM_PATH: &str = "/generate_stream";
 const GET_LAST_THREAD_INFO_METHOD: &str = "/threads/last";
 const GET_THREAD_MESSAGES_METHOD_PREFIX: &str = "/threads/";
 const GET_ALL_THREAD_INFOS_METHOD: &str = "/threads";
+const LISTEN_THREAD_PATH: &str = "/listen_thread";
 
 #[async_trait::async_trait]
 impl RequestHttpConvert<CoreRequest> for CoreRequest {
@@ -41,15 +42,21 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
                 validate_method(&request, Method::GET)?;
                 CoreRequest::GetLastThreadInfo
             }
+            LISTEN_THREAD_PATH => {
+                validate_method(&request, Method::POST)?;
+                CoreRequest::ListenOnThread(parse_request(request).await?)
+            }
             _ => {
-                if !path.starts_with(GET_THREAD_MESSAGES_METHOD_PREFIX)
-                    || request.method() != &Method::GET
-                    || path.split(&['/', '\\']).count() != 2
+                if path.starts_with(GET_THREAD_MESSAGES_METHOD_PREFIX)
+                    && request.method() == &Method::GET
                 {
-                    return Ok(None);
+                    let split: Vec<_> = path.split(&['/', '\\']).collect();
+                    let id = split[1].to_string();
+                    if split.len() == 2 {
+                        return Ok(Some(CoreRequest::GetThreadMessages { id }));
+                    }
                 }
-                let id = path.split(&['/', '\\']).nth(1).unwrap();
-                CoreRequest::GetThreadMessages { id: id.to_string() }
+                return Ok(None);
             }
         };
         Ok(Some(request))
@@ -75,8 +82,14 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
                 Method::GET,
                 &Value::Null,
             )?,
-            CoreRequest::GetThreadMessages { id } => {
-                serialize_to_http_request(base_url, GET_ALL_THREAD_INFOS_METHOD, Method::GET, &id)?
+            CoreRequest::GetThreadMessages { id } => serialize_to_http_request(
+                base_url,
+                &format!("{}{}", GET_THREAD_MESSAGES_METHOD_PREFIX, id),
+                Method::GET,
+                &id,
+            )?,
+            CoreRequest::ListenOnThread(request) => {
+                serialize_to_http_request(base_url, LISTEN_THREAD_PATH, Method::GET, &request)?
             }
             _ => return Ok(None),
         };
@@ -112,6 +125,9 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
             ModalHttpResponse::Event(event) => ServiceResponse::Single(match original_request {
                 CoreRequest::GenerationStream(_) => {
                     CoreResponse::GenerationStream(parse_from_value(event)?)
+                }
+                CoreRequest::ListenOnThread { .. } => {
+                    CoreResponse::ListenOnThread(parse_from_value(event)?)
                 }
                 _ => return Ok(None),
             }),

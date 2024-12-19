@@ -15,6 +15,7 @@ const INIT_PROJECT_METHOD: &str = "init_project";
 const GET_LAST_THREAD_INFO_METHOD: &str = "get_last_thread_info";
 const GET_ALL_THREAD_INFOS_METHOD: &str = "get_all_thread_infos";
 const GET_THREAD_MESSAGES_METHOD: &str = "get_thread_messages";
+const LISTEN_ON_THREAD_METHOD: &str = "listen_on_thread";
 
 impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
     fn from_jsonrpc_request(value: JsonRpcRequest) -> Result<Option<Self>, ProtocolError> {
@@ -27,6 +28,7 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
             GET_THREAD_MESSAGES_METHOD => CoreRequest::GetThreadMessages {
                 id: value.parse_params()?,
             },
+            LISTEN_ON_THREAD_METHOD => CoreRequest::ListenOnThread(value.parse_params()?),
             _ => return Ok(None),
         }))
     }
@@ -47,6 +49,10 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
             CoreRequest::GetThreadMessages { id } => (
                 GET_THREAD_MESSAGES_METHOD,
                 Some(serde_json::to_value(id).unwrap()),
+            ),
+            CoreRequest::ListenOnThread(request) => (
+                LISTEN_ON_THREAD_METHOD,
+                Some(serde_json::to_value(request).unwrap()),
             ),
         };
         JsonRpcRequest::new(method.to_string(), params)
@@ -82,6 +88,9 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
                     CoreRequest::GenerationStream(_) => {
                         Self::GenerationStream(parse_from_value(result)?)
                     }
+                    CoreRequest::ListenOnThread { .. } => {
+                        Self::ListenOnThread(parse_from_value(result)?)
+                    }
                     _ => return Ok(None),
                 }))
             }
@@ -101,6 +110,10 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
             CoreResponse::GetAllThreadInfos(response) => serde_json::to_value(response).unwrap(),
             CoreResponse::GetThreadMessages(response) => serde_json::to_value(response).unwrap(),
             CoreResponse::InitProject => Value::Null,
+            CoreResponse::ListenOnThread(response) => {
+                is_notification = true;
+                serde_json::to_value(response).unwrap()
+            }
         });
         match is_notification {
             true => JsonRpcNotification::new_with_result_params(result, id.to_string()).into(),

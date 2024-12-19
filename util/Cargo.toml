@@ -13,6 +13,7 @@ directories = "5.0"
 multilink = { version = "1.0", path = "../../multilink" }
 serde = { workspace = true, optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+rand = { workspace = true }
 
 [features]
 logging = ["dep:tracing-subscriber"]

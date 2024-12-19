@@ -47,6 +47,8 @@ pub enum MessageRole {
 /// A prompt or generated message from a thread.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    /// ID of the client that sent or received the message.
+    pub client_id: Option<String>,
     /// The actor who presented the message.
     pub role: MessageRole,
     /// Text content of the message.
@@ -99,6 +101,13 @@ pub trait Core: Send + Sync {
 
     /// Initialize a new llmvm project in the current directory.
     fn init_project(&self) -> Result<(), ProtocolError>;
+
+    /// Receive notifications for messages on a given thread
+    async fn listen_on_thread(
+        &self,
+        thread_id: String,
+        client_id: String,
+    ) -> Result<NotificationStream<Option<Message>>, ProtocolError>;
 }
 
 /// Request for language model generation.
@@ -159,6 +168,8 @@ pub struct GenerationRequest {
     /// If true, the prompt and response will be saved to the existing thread id
     /// or a new thread.
     pub save_thread: bool,
+    /// Random ID of the client to be used over the course of a session.
+    pub client_id: Option<String>,
 }
 
 /// Response for text generation via core service.
@@ -181,6 +192,15 @@ pub struct ModelDescription {
     pub model_name: String,
     /// Custom endpoint (if any)
     pub endpoint: Option<Url>,
+}
+
+/// Request to listen on thread messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListenOnThreadRequest {
+    /// ID of thread to listen on
+    pub thread_id: String,
+    /// Random ID of the client to be used over the course of a session.
+    pub client_id: String,
 }
 
 impl ModelDescription {

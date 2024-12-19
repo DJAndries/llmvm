@@ -44,6 +44,8 @@ pub enum CoreError {
     HttpServiceCreate,
     #[error("unexpected service response type")]
     UnexpectedServiceResponse,
+    #[error("file notification error: {0}")]
+    FileNotify(#[from] notify::Error),
 }
 
 impl Into<ProtocolError> for CoreError {
@@ -66,6 +68,7 @@ impl Into<ProtocolError> for CoreError {
             CoreError::MissingParameter(_) => ProtocolErrorType::BadRequest,
             CoreError::HttpServiceCreate => ProtocolErrorType::Internal,
             CoreError::UnexpectedServiceResponse => ProtocolErrorType::Internal,
+            CoreError::FileNotify(_) => ProtocolErrorType::Internal,
         };
         ProtocolError {
             error_type,

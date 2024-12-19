@@ -169,6 +169,7 @@ impl LLMVMCore {
             messages.insert(
                 0,
                 Message {
+                    client_id: request.client_id.clone(),
                     role: MessageRole::System,
                     content,
                 },
@@ -179,6 +180,7 @@ impl LLMVMCore {
             true => {
                 let mut clone = thread_messages.clone().unwrap_or_default();
                 clone.push(Message {
+                    client_id: request.client_id.clone(),
                     role: MessageRole::User,
                     content: prompt.main_prompt.clone(),
                 });
