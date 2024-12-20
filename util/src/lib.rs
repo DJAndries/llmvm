@@ -18,6 +18,7 @@ pub enum DirType {
     Logs,
     Config,
     Weights,
+    MiscData,
 }
 
 impl Display for DirType {
@@ -32,6 +33,7 @@ impl Display for DirType {
                 DirType::Logs => LOGS_DIR,
                 DirType::Config => CONFIG_DIR,
                 DirType::Weights => WEIGHTS_DIR,
+                DirType::MiscData => "",
             }
         )
     }
@@ -49,7 +51,13 @@ fn get_home_file_path(dir_type: DirType, filename: &str) -> Option<PathBuf> {
     get_home_dirs().map(|p| {
         let subdir = match dir_type {
             DirType::Config => p.config_dir().into(),
-            _ => p.data_dir().join(dir_type.to_string()),
+            _ => {
+                let subdir_path = dir_type.to_string();
+                match dir_type.to_string().is_empty() {
+                    true => p.data_dir().into(),
+                    false => p.data_dir().join(subdir_path),
+                }
+            }
         };
         create_dir_all(&subdir).ok();
         subdir.join(filename)
@@ -61,7 +69,11 @@ pub fn get_file_path(dir_type: DirType, filename: &str, will_create: bool) -> Op
     let project_dir = get_project_dir();
     if let Some(project_dir) = project_dir {
         if project_dir.exists() {
-            let type_dir = project_dir.join(dir_type.to_string());
+            let subdir_path = dir_type.to_string();
+            let type_dir = match subdir_path.is_empty() {
+                true => project_dir,
+                false => project_dir.join(subdir_path),
+            };
             create_dir_all(&type_dir).ok();
             let file_dir = type_dir.join(filename);
             if will_create || file_dir.exists() {

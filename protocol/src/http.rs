@@ -12,12 +12,16 @@ use multilink::{
 };
 use serde_json::Value;
 
-use crate::service::{BackendRequest, BackendResponse, CoreRequest, CoreResponse};
+use crate::{
+    service::{BackendRequest, BackendResponse, CoreRequest, CoreResponse},
+    GetThreadMessagesRequest, NewThreadInGroupRequest,
+};
 
 const GENERATE_PATH: &str = "/generate";
 const GENERATE_STREAM_PATH: &str = "/generate_stream";
 const GET_LAST_THREAD_INFO_METHOD: &str = "/threads/last";
 const GET_THREAD_MESSAGES_METHOD_PREFIX: &str = "/threads/";
+const THREAD_GROUP_PREFIX: &str = "/thread_groups/";
 const GET_ALL_THREAD_INFOS_METHOD: &str = "/threads";
 const LISTEN_THREAD_PATH: &str = "/listen_thread";
 
@@ -53,7 +57,34 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
                     let split: Vec<_> = path.split(&['/', '\\']).collect();
                     let id = split[1].to_string();
                     if split.len() == 2 {
-                        return Ok(Some(CoreRequest::GetThreadMessages { id }));
+                        return Ok(Some(CoreRequest::GetThreadMessages(
+                            GetThreadMessagesRequest {
+                                thread_id: Some(id),
+                                thread_group_id: None,
+                                tag: None,
+                            },
+                        )));
+                    }
+                }
+                if path.starts_with(THREAD_GROUP_PREFIX) && request.method() == &Method::GET {
+                    let split: Vec<_> = path.split(&['/', '\\']).collect();
+                    if split.len() == 3 {
+                        if request.method() == &Method::GET {
+                            return Ok(Some(CoreRequest::GetThreadMessages(
+                                GetThreadMessagesRequest {
+                                    thread_id: None,
+                                    thread_group_id: Some(split[1].to_string()),
+                                    tag: Some(split[2].to_string()),
+                                },
+                            )));
+                        } else if request.method() == &Method::POST {
+                            return Ok(Some(CoreRequest::NewThreadInGroup(
+                                NewThreadInGroupRequest {
+                                    thread_group_id: split[1].to_string(),
+                                    tag: split[2].to_string(),
+                                },
+                            )));
+                        }
                     }
                 }
                 return Ok(None);
@@ -82,12 +113,21 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
                 Method::GET,
                 &Value::Null,
             )?,
-            CoreRequest::GetThreadMessages { id } => serialize_to_http_request(
-                base_url,
-                &format!("{}{}", GET_THREAD_MESSAGES_METHOD_PREFIX, id),
-                Method::GET,
-                &id,
-            )?,
+            CoreRequest::GetThreadMessages(req) => {
+                let path = if let Some(id) = &req.thread_id {
+                    format!("{}{}", GET_THREAD_MESSAGES_METHOD_PREFIX, id)
+                } else if let (Some(group_id), Some(tag)) = (&req.thread_group_id, &req.tag) {
+                    format!("{}{}/{}", THREAD_GROUP_PREFIX, group_id, tag)
+                } else {
+                    return Ok(None);
+                };
+
+                serialize_to_http_request(base_url, &path, Method::GET, &())?
+            }
+            CoreRequest::NewThreadInGroup(req) => {
+                let path = format!("{}{}/{}", THREAD_GROUP_PREFIX, req.thread_group_id, req.tag);
+                serialize_to_http_request(base_url, &path, Method::POST, &())?
+            }
             CoreRequest::ListenOnThread(request) => {
                 serialize_to_http_request(base_url, LISTEN_THREAD_PATH, Method::GET, &request)?
             }
@@ -119,6 +159,9 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                 ),
                 CoreRequest::GetThreadMessages { .. } => ServiceResponse::Single(
                     CoreResponse::GetThreadMessages(parse_response(response).await?),
+                ),
+                CoreRequest::NewThreadInGroup(_) => ServiceResponse::Single(
+                    CoreResponse::NewThreadInGroup(parse_response(response).await?),
                 ),
                 _ => return Ok(None),
             },
@@ -152,6 +195,9 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                     serialize_to_http_response(&response, StatusCode::OK)?,
                 ),
                 CoreResponse::GetThreadMessages(response) => ModalHttpResponse::Single(
+                    serialize_to_http_response(&response, StatusCode::OK)?,
+                ),
+                CoreResponse::NewThreadInGroup(response) => ModalHttpResponse::Single(
                     serialize_to_http_response(&response, StatusCode::OK)?,
                 ),
                 _ => return Ok(None),

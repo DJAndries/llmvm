@@ -2,6 +2,7 @@ use std::{
     env,
     io::{stdout, Stdout, Write},
     process::exit,
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{anyhow, Result};
@@ -11,8 +12,9 @@ use llmvm_protocol::{
     http::client::HttpClientConfig,
     service::{util::build_core_service_from_config, BoxedService, CoreRequest, CoreResponse},
     stdio::client::StdioClientConfig,
-    ConfigExampleSnippet, GenerationParameters, GenerationRequest, ListenOnThreadRequest, Message,
-    MessageRole, ServiceResponse,
+    ConfigExampleSnippet, GenerationParameters, GenerationRequest, GetThreadMessagesRequest,
+    ListenOnThreadRequest, Message, MessageRole, NewThreadInGroupRequest, ServiceResponse,
+    ThreadEvent,
 };
 use llmvm_util::{config::load_config, generate_client_id};
 use rustyline::{error::ReadlineError, Config as RlConfig, DefaultEditor as RlEditor, EditMode};
@@ -27,6 +29,8 @@ const MESSAGE_PROMPT_PARAM: &str = "user_message";
 const NO_COLOR_ENV_VAR: &str = "NO_COLOR";
 const USER_ROLE_PREFIX: &str = "\x1b[1;36myou";
 const ASSISTANT_ROLE_PREFIX: &str = "\x1b[1;33massistant";
+const CONSOLE_ROLE_PREFIX: &str = "\x1b[1;32mconsole";
+const CONSOLE_ROLE_NO_COLOR_PREFIX: &str = "console";
 const RESET_COLOR: &str = "\x1b[0m";
 const USER_ROLE_NO_COLOR_PREFIX: &str = "you";
 const ASSISTANT_ROLE_NO_COLOR_PREFIX: &str = "assistant";
@@ -34,17 +38,31 @@ const ASSISTANT_ROLE_NO_COLOR_PREFIX: &str = "assistant";
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
+    /// Preset ID to use
     #[arg(short, long, default_value = "gpt-3.5-chat")]
     preset: Option<String>,
 
+    /// Override model ID in preset
     #[arg(short, long)]
     model: Option<String>,
 
+    /// Load last active chat thread
     #[arg(short, long)]
     load_last_chat: bool,
 
+    /// Existing thread ID to load
     #[arg(short = 't', long)]
     load_thread_id: Option<String>,
+
+    /// Tag within a thread group to use.
+    /// This switch takes precedence over --load_thread_id
+    #[arg(long)]
+    tag: Option<String>,
+
+    /// ID of the thread group to use.
+    /// If a tag is provided, then this will default to the current directory path.
+    #[arg(long)]
+    thread_group_id: Option<String>,
 
     /// Enable vi mode
     #[arg(long)]
@@ -82,9 +100,14 @@ struct ChatApp {
     client_id: String,
     stdout: Stdout,
     listener_active: bool,
+    in_console: Arc<Mutex<bool>>,
 }
 
-fn get_output_prefix(role: MessageRole, client_id: Option<&String>) -> String {
+fn get_output_prefix(
+    role: MessageRole,
+    client_id: Option<&String>,
+    in_console: &Mutex<bool>,
+) -> String {
     let no_color = !env::var(NO_COLOR_ENV_VAR).unwrap_or_default().is_empty();
     let role_str = match role {
         MessageRole::System => panic!("no output prefix for system role"),
@@ -92,9 +115,15 @@ fn get_output_prefix(role: MessageRole, client_id: Option<&String>) -> String {
             false => ASSISTANT_ROLE_PREFIX,
             true => ASSISTANT_ROLE_NO_COLOR_PREFIX,
         },
-        MessageRole::User => match no_color {
-            false => USER_ROLE_PREFIX,
-            true => USER_ROLE_NO_COLOR_PREFIX,
+        MessageRole::User => match *in_console.lock().unwrap() {
+            true => match no_color {
+                true => CONSOLE_ROLE_NO_COLOR_PREFIX,
+                false => CONSOLE_ROLE_PREFIX,
+            },
+            false => match no_color {
+                true => USER_ROLE_NO_COLOR_PREFIX,
+                false => USER_ROLE_PREFIX,
+            },
         },
     };
     match client_id {
@@ -105,7 +134,16 @@ fn get_output_prefix(role: MessageRole, client_id: Option<&String>) -> String {
 
 impl ChatApp {
     async fn new() -> Result<Self> {
-        let cli = Cli::parse();
+        let mut cli = Cli::parse();
+
+        if cli.thread_group_id.is_none() && cli.tag.is_some() {
+            cli.thread_group_id = Some(
+                std::env::current_dir()?
+                    .canonicalize()?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
 
         let mut config = load_config::<ChatConfig>(CONFIG_FILENAME).unwrap_or_else(|e| {
             eprintln!("failed to load config: {}", e);
@@ -136,19 +174,26 @@ impl ChatApp {
             stdout,
             client_id: generate_client_id("chat"),
             listener_active: false,
+            in_console: Default::default(),
         };
-        new.thread_id = if new.cli.load_last_chat {
-            new.get_last_thread_id().await?
-        } else {
-            new.cli.load_thread_id.clone()
-        };
+        if new.cli.tag.is_none() {
+            new.thread_id = if new.cli.load_last_chat {
+                new.get_last_thread_id().await?
+            } else {
+                new.cli.load_thread_id.clone()
+            };
+        }
         Ok(new)
     }
 
     async fn output_existing_messages(&mut self) -> Result<()> {
-        if let Some(id) = self.thread_id.as_ref() {
-            for message in self.get_thread_messages(id.clone()).await? {
-                let prefix = get_output_prefix(message.role, message.client_id.as_ref());
+        if self.thread_id.is_some() || self.cli.tag.is_some() {
+            for message in self.get_thread_messages().await? {
+                let prefix = get_output_prefix(
+                    message.role,
+                    message.client_id.as_ref(),
+                    self.in_console.as_ref(),
+                );
                 println!("{}{}", prefix, message.content);
             }
         }
@@ -171,10 +216,15 @@ impl ChatApp {
         Err(anyhow!("unexpected response while getting thread info"))
     }
 
-    async fn get_thread_messages(&mut self, id: String) -> Result<Vec<Message>> {
+    async fn get_thread_messages(&mut self) -> Result<Vec<Message>> {
         let response = self
             .llmvm_core_service
-            .call(CoreRequest::GetThreadMessages { id })
+            .call(CoreRequest::GetThreadMessages(GetThreadMessagesRequest {
+                thread_id: self.thread_id.clone(),
+                thread_group_id: self.cli.thread_group_id.clone(),
+                tag: self.cli.tag.clone(),
+                ..Default::default()
+            }))
             .await
             .map_err(|e| anyhow!(e))?;
         match response {
@@ -191,33 +241,55 @@ impl ChatApp {
         if self.listener_active {
             return Ok(());
         }
-        if let Some(thread_id) = self.thread_id.clone() {
+        if self.thread_id.is_some() || self.cli.tag.is_some() {
+            let thread_id = match self.cli.tag.is_some() {
+                true => None,
+                false => self.thread_id.clone(),
+            };
             let response = self
                 .llmvm_core_service
                 .call(CoreRequest::ListenOnThread(ListenOnThreadRequest {
                     thread_id,
+                    thread_group_id: self.cli.thread_group_id.clone(),
+                    tag: self.cli.tag.clone(),
                     client_id: self.client_id.clone(),
+                    ..Default::default()
                 }))
                 .await
                 .map_err(|e| anyhow!(e))?;
             let client_id = self.client_id.clone();
+            let in_console = self.in_console.clone();
             tokio::spawn(async move {
                 print!("\r");
                 if let ServiceResponse::Multiple(mut stream) = response {
                     while let Some(result) = stream.next().await {
                         if let Ok(response) = result {
-                            if let CoreResponse::ListenOnThread(message) = response {
-                                if let Some(message) = message {
-                                    let prefix =
-                                        get_output_prefix(message.role, message.client_id.as_ref());
-                                    print!(
-                                        "\r{}{}\n{}",
-                                        prefix,
-                                        message.content,
-                                        get_output_prefix(MessageRole::User, Some(&client_id))
-                                    );
-                                    stdout().lock().flush().unwrap();
+                            if let CoreResponse::ListenOnThread(event) = response {
+                                if event.is_none() {
+                                    continue;
                                 }
+                                match event.unwrap() {
+                                    ThreadEvent::Message { message } => {
+                                        let prefix = get_output_prefix(
+                                            message.role,
+                                            message.client_id.as_ref(),
+                                            &Mutex::new(false),
+                                        );
+                                        println!("\r{}{}", prefix, message.content,);
+                                    }
+                                    ThreadEvent::NewThread { thread_id } => {
+                                        println!("\r\nNew thread started in group: {thread_id}\n");
+                                    }
+                                }
+                                print!(
+                                    "\r{}",
+                                    get_output_prefix(
+                                        MessageRole::User,
+                                        Some(&client_id),
+                                        in_console.as_ref()
+                                    ),
+                                );
+                                stdout().lock().flush().unwrap();
                             }
                         }
                     }
@@ -228,12 +300,52 @@ impl ChatApp {
         Ok(())
     }
 
+    fn enter_console(&mut self) {
+        *self.in_console.lock().unwrap() = true;
+        println!("\nAvailable commands:\nnew_group_thread - Creates a new thread within thread group, if one is being used\nret - Return to the chat\n");
+    }
+
+    async fn handle_console_input(&mut self, trimmed_input: &str) -> Result<()> {
+        match trimmed_input {
+            "new_group_thread" => {
+                if self.cli.thread_group_id.is_none() || self.cli.tag.is_none() {
+                    return Ok(());
+                }
+                self.llmvm_core_service
+                    .call(CoreRequest::NewThreadInGroup(NewThreadInGroupRequest {
+                        thread_group_id: self.cli.thread_group_id.clone().unwrap(),
+                        tag: self.cli.tag.clone().unwrap(),
+                    }))
+                    .await
+                    .map_err(|e| anyhow!(e))?;
+            }
+            "ret" => {
+                *self.in_console.lock().unwrap() = false;
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+
     async fn handle_input(&mut self, line: String) -> Result<bool> {
         let trimmed_input = line.trim().to_string();
-        if trimmed_input == "exit" {
-            return Ok(false);
+        if *self.in_console.lock().unwrap() {
+            self.handle_console_input(&trimmed_input).await?;
+            return Ok(true);
+        }
+        match trimmed_input.as_str() {
+            "exit" => return Ok(false),
+            "!c" => {
+                self.enter_console();
+                return Ok(true);
+            }
+            _ => (),
         }
 
+        let thread_id = match self.cli.tag.is_some() {
+            true => None,
+            false => self.thread_id.clone(),
+        };
         let response = self
             .llmvm_core_service
             .call(CoreRequest::GenerationStream(GenerationRequest {
@@ -244,9 +356,12 @@ impl ChatApp {
                     ..Default::default()
                 }),
                 custom_prompt: Some(trimmed_input),
-                existing_thread_id: self.thread_id.clone(),
+                existing_thread_id: thread_id,
+                thread_group_id: self.cli.thread_group_id.clone(),
+                thread_group_tag: self.cli.tag.clone(),
                 save_thread: true,
                 client_id: Some(self.client_id.clone()),
+                ..Default::default()
             }))
             .await;
 
@@ -255,7 +370,11 @@ impl ChatApp {
             Ok(response) => {
                 print!(
                     "{}",
-                    get_output_prefix(MessageRole::Assistant, Some(&self.client_id))
+                    get_output_prefix(
+                        MessageRole::Assistant,
+                        Some(&self.client_id),
+                        self.in_console.as_ref()
+                    )
                 );
                 self.stdout.flush().unwrap();
                 match response {
@@ -289,10 +408,9 @@ impl ChatApp {
     }
 
     async fn read_input(&mut self) -> Result<bool> {
-        match self
-            .rl
-            .readline(get_output_prefix(MessageRole::User, Some(&self.client_id)).as_str())
-        {
+        match self.rl.readline(
+            get_output_prefix(MessageRole::User, Some(&self.client_id), &self.in_console).as_str(),
+        ) {
             Ok(line) => self.handle_input(line).await,
             Err(e) => match e {
                 ReadlineError::Interrupted | ReadlineError::Eof => Ok(false),
@@ -308,6 +426,8 @@ impl ChatApp {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut chat = ChatApp::new().await?;
+
+    println!("Use !c to invoke the console\n");
 
     chat.output_existing_messages().await?;
     chat.maybe_start_listening_on_thread().await?;

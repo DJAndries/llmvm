@@ -4,7 +4,8 @@ use async_stream::stream;
 use futures::StreamExt;
 use llmvm_protocol::{
     error::ProtocolErrorType, service::BackendResponse, Core, GenerationRequest,
-    GenerationResponse, Message, NotificationStream, ProtocolError, ThreadInfo,
+    GenerationResponse, GetThreadMessagesRequest, ListenOnThreadRequest, Message,
+    NewThreadInGroupRequest, NotificationStream, ProtocolError, ThreadEvent, ThreadInfo,
 };
 use llmvm_util::{get_file_path, DirType};
 use tracing::debug;
@@ -13,7 +14,7 @@ use crate::{
     error::CoreError,
     threads::{
         get_thread_infos, get_thread_messages, listen_on_thread,
-        maybe_save_thread_messages_and_get_thread_id,
+        maybe_save_thread_messages_and_get_thread_id, save_new_thread_in_group,
     },
     LLMVMCore, PROJECT_DIR_NAME,
 };
@@ -25,7 +26,7 @@ impl Core for LLMVMCore {
         request: GenerationRequest,
     ) -> std::result::Result<GenerationResponse, ProtocolError> {
         async {
-            let (backend_request, model_description, thread_messages_to_save) =
+            let (backend_request, model_description, thread_messages_to_save, existing_thread_id) =
                 self.prepare_for_generate(&request).await?;
 
             let response = self
@@ -38,6 +39,7 @@ impl Core for LLMVMCore {
                 &request,
                 response.response.clone(),
                 thread_messages_to_save,
+                existing_thread_id,
             )
             .await?;
 
@@ -55,7 +57,7 @@ impl Core for LLMVMCore {
         request: GenerationRequest,
     ) -> std::result::Result<NotificationStream<GenerationResponse>, ProtocolError> {
         async {
-            let (backend_request, model_description, thread_messages_to_save) =
+            let (backend_request, model_description, thread_messages_to_save, existing_thread_id) =
                 self.prepare_for_generate(&request).await?;
 
             let mut stream = self
@@ -81,7 +83,7 @@ impl Core for LLMVMCore {
                         }
                     }
                 }
-                if let Ok(thread_id) = maybe_save_thread_messages_and_get_thread_id(&request, full_response, thread_messages_to_save).await {
+                if let Ok(thread_id) = maybe_save_thread_messages_and_get_thread_id(&request, full_response, thread_messages_to_save, existing_thread_id).await {
                     yield Ok(GenerationResponse { response: String::new(), thread_id });
                 }
             }.boxed())
@@ -102,9 +104,12 @@ impl Core for LLMVMCore {
 
     async fn get_thread_messages(
         &self,
-        id: String,
+        request: GetThreadMessagesRequest,
     ) -> std::result::Result<Vec<Message>, ProtocolError> {
-        get_thread_messages(&id).await.map_err(|e| e.into())
+        get_thread_messages(&request)
+            .await
+            .map_err(|e| e.into())
+            .map(|(msgs, _)| msgs)
     }
 
     fn init_project(&self) -> std::result::Result<(), ProtocolError> {
@@ -125,15 +130,17 @@ impl Core for LLMVMCore {
 
     async fn listen_on_thread(
         &self,
-        thread_id: String,
-        client_id: String,
-    ) -> Result<NotificationStream<Option<Message>>, ProtocolError> {
+        request: ListenOnThreadRequest,
+    ) -> Result<NotificationStream<Option<ThreadEvent>>, ProtocolError> {
         async {
-            let (mut rx, watcher) = listen_on_thread(thread_id, client_id.clone()).await?;
             Ok(stream! {
+                let (mut rx, mut watcher) = listen_on_thread(request.clone()).await?;
                 // Send dummy None value so that the client can immediately access and monitor the notification stream
                 yield Ok(None);
                 while let Some(message) = rx.recv().await {
+                    if let ThreadEvent::NewThread { .. } = &message {
+                        (rx, watcher) = listen_on_thread(request.clone()).await?;
+                    }
                     yield Ok(Some(message));
                 }
                 drop(watcher);
@@ -142,5 +149,14 @@ impl Core for LLMVMCore {
         }
         .await
         .map_err(|e: CoreError| e.into())
+    }
+
+    async fn new_thread_in_group(
+        &self,
+        request: NewThreadInGroupRequest,
+    ) -> Result<String, ProtocolError> {
+        save_new_thread_in_group(request.thread_group_id, request.tag)
+            .await
+            .map_err(|e| e.into())
     }
 }

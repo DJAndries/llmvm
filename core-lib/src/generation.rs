@@ -4,7 +4,8 @@ use llmvm_protocol::service::{BackendRequest, BackendResponse};
 use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, GenerationParameters, GenerationRequest,
-    Message, MessageRole, ModelDescription, NotificationStream, ServiceResponse,
+    GetThreadMessagesRequest, Message, MessageRole, ModelDescription, NotificationStream,
+    ServiceResponse,
 };
 use serde_json::Value;
 
@@ -100,6 +101,7 @@ impl LLMVMCore {
         BackendGenerationRequest,
         ModelDescription,
         Option<Vec<Message>>,
+        Option<String>,
     )> {
         let mut parameters = match &request.preset_id {
             Some(preset_id) => {
@@ -153,10 +155,19 @@ impl LLMVMCore {
             },
         };
 
-        let mut thread_messages = match request.existing_thread_id.as_ref() {
-            Some(thread_id) => Some(get_thread_messages(thread_id).await?),
-            None => None,
-        };
+        let (mut thread_messages, existing_thread_id) =
+            match request.existing_thread_id.is_some() || request.thread_group_id.is_some() {
+                true => {
+                    let (msgs, thread_id) = get_thread_messages(&GetThreadMessagesRequest {
+                        thread_id: request.existing_thread_id.clone(),
+                        thread_group_id: request.thread_group_id.clone(),
+                        tag: request.thread_group_tag.clone(),
+                    })
+                    .await?;
+                    (Some(msgs), Some(thread_id))
+                }
+                false => (None, None),
+            };
         if let Some(content) = prompt.system_prompt {
             let messages = thread_messages.get_or_insert_with(|| Vec::with_capacity(1));
             messages.retain(|message| {
@@ -207,6 +218,11 @@ impl LLMVMCore {
             "Thread messages for requests: {:#?}",
             backend_request.thread_messages
         );
-        Ok((backend_request, model_description, thread_messages_to_save))
+        Ok((
+            backend_request,
+            model_description,
+            thread_messages_to_save,
+            existing_thread_id,
+        ))
     }
 }

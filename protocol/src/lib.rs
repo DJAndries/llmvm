@@ -29,7 +29,7 @@ pub struct ThreadInfo {
     /// id of the thread.
     pub id: String,
     /// Last modified time of the thread.
-    pub modified: String,
+    pub modified: Option<String>,
 }
 
 /// The actor who presented the message.
@@ -97,7 +97,10 @@ pub trait Core: Send + Sync {
     async fn get_all_thread_infos(&self) -> Result<Vec<ThreadInfo>, ProtocolError>;
 
     /// Retrieve all thread messages for a thread id.
-    async fn get_thread_messages(&self, id: String) -> Result<Vec<Message>, ProtocolError>;
+    async fn get_thread_messages(
+        &self,
+        request: GetThreadMessagesRequest,
+    ) -> Result<Vec<Message>, ProtocolError>;
 
     /// Initialize a new llmvm project in the current directory.
     fn init_project(&self) -> Result<(), ProtocolError>;
@@ -105,9 +108,14 @@ pub trait Core: Send + Sync {
     /// Receive notifications for messages on a given thread
     async fn listen_on_thread(
         &self,
-        thread_id: String,
-        client_id: String,
-    ) -> Result<NotificationStream<Option<Message>>, ProtocolError>;
+        request: ListenOnThreadRequest,
+    ) -> Result<NotificationStream<Option<ThreadEvent>>, ProtocolError>;
+
+    /// Creates a new thread within a thread group, returning the thread id
+    async fn new_thread_in_group(
+        &self,
+        request: NewThreadInGroupRequest,
+    ) -> Result<String, ProtocolError>;
 }
 
 /// Request for language model generation.
@@ -165,6 +173,10 @@ pub struct GenerationRequest {
     pub custom_prompt: Option<String>,
     /// An existing thread id for loadlng previous messages.
     pub existing_thread_id: Option<String>,
+    /// ID for a thread group. To be used in place of `existing_thread_id`.
+    pub thread_group_id: Option<String>,
+    /// ID for a thread group. If `thread_group_id` is provided, this must be provided.
+    pub thread_group_tag: Option<String>,
     /// If true, the prompt and response will be saved to the existing thread id
     /// or a new thread.
     pub save_thread: bool,
@@ -194,13 +206,47 @@ pub struct ModelDescription {
     pub endpoint: Option<Url>,
 }
 
+/// Request to retrieve existing thread messages.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GetThreadMessagesRequest {
+    /// ID of thread to listen on. If `thread_group_id` and `tag` are not provided, this must be provided.
+    pub thread_id: Option<String>,
+    /// ID of thread group to listen on. If `thread_id` is not provided, this must be provided.
+    pub thread_group_id: Option<String>,
+    /// Tag of thread within the group. If `thread_id` is not provided, this must be provided.
+    pub tag: Option<String>,
+}
+
 /// Request to listen on thread messages
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ListenOnThreadRequest {
-    /// ID of thread to listen on
-    pub thread_id: String,
+    /// ID of thread to listen on. If `thread_group_id` and `tag` are not provided, this must be provided.
+    pub thread_id: Option<String>,
+    /// ID of thread group to listen on. If `thread_id` is not provided, this must be provided.
+    pub thread_group_id: Option<String>,
+    /// Tag of thread within the group. If `thread_id` is not provided, this must be provided.
+    pub tag: Option<String>,
     /// Random ID of the client to be used over the course of a session.
     pub client_id: String,
+}
+
+/// Request to start a new thread within a given thread group
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewThreadInGroupRequest {
+    /// ID of thread group
+    pub thread_group_id: String,
+    /// Tag of thread within the group
+    pub tag: String,
+}
+
+/// Event on a given thread
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ThreadEvent {
+    /// New message on thread
+    Message { message: Message },
+    /// New thread ID created, only dispatched for thread group listening.
+    NewThread { thread_id: String },
 }
 
 impl ModelDescription {

@@ -16,6 +16,7 @@ const GET_LAST_THREAD_INFO_METHOD: &str = "get_last_thread_info";
 const GET_ALL_THREAD_INFOS_METHOD: &str = "get_all_thread_infos";
 const GET_THREAD_MESSAGES_METHOD: &str = "get_thread_messages";
 const LISTEN_ON_THREAD_METHOD: &str = "listen_on_thread";
+const NEW_THREAD_IN_GROUP_METHOD: &str = "new_thread_in_group";
 
 impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
     fn from_jsonrpc_request(value: JsonRpcRequest) -> Result<Option<Self>, ProtocolError> {
@@ -25,10 +26,9 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
             INIT_PROJECT_METHOD => CoreRequest::InitProject,
             GET_LAST_THREAD_INFO_METHOD => CoreRequest::GetLastThreadInfo,
             GET_ALL_THREAD_INFOS_METHOD => CoreRequest::GetAllThreadInfos,
-            GET_THREAD_MESSAGES_METHOD => CoreRequest::GetThreadMessages {
-                id: value.parse_params()?,
-            },
+            GET_THREAD_MESSAGES_METHOD => CoreRequest::GetThreadMessages(value.parse_params()?),
             LISTEN_ON_THREAD_METHOD => CoreRequest::ListenOnThread(value.parse_params()?),
+            NEW_THREAD_IN_GROUP_METHOD => CoreRequest::NewThreadInGroup(value.parse_params()?),
             _ => return Ok(None),
         }))
     }
@@ -46,12 +46,16 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
             CoreRequest::InitProject => (INIT_PROJECT_METHOD, None),
             CoreRequest::GetLastThreadInfo => (GET_LAST_THREAD_INFO_METHOD, None),
             CoreRequest::GetAllThreadInfos => (GET_ALL_THREAD_INFOS_METHOD, None),
-            CoreRequest::GetThreadMessages { id } => (
+            CoreRequest::GetThreadMessages(request) => (
                 GET_THREAD_MESSAGES_METHOD,
-                Some(serde_json::to_value(id).unwrap()),
+                Some(serde_json::to_value(request).unwrap()),
             ),
             CoreRequest::ListenOnThread(request) => (
                 LISTEN_ON_THREAD_METHOD,
+                Some(serde_json::to_value(request).unwrap()),
+            ),
+            CoreRequest::NewThreadInGroup(request) => (
+                NEW_THREAD_IN_GROUP_METHOD,
                 Some(serde_json::to_value(request).unwrap()),
             ),
         };
@@ -79,6 +83,9 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
                         Self::GetThreadMessages(parse_from_value(result)?)
                     }
                     CoreRequest::InitProject => Self::InitProject,
+                    CoreRequest::NewThreadInGroup(_) => {
+                        Self::NewThreadInGroup(parse_from_value(result)?)
+                    }
                     _ => return Ok(None),
                 }))
             }
@@ -114,6 +121,7 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
                 is_notification = true;
                 serde_json::to_value(response).unwrap()
             }
+            CoreResponse::NewThreadInGroup(response) => serde_json::to_value(response).unwrap(),
         });
         match is_notification {
             true => JsonRpcNotification::new_with_result_params(result, id.to_string()).into(),
