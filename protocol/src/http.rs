@@ -14,16 +14,27 @@ use serde_json::Value;
 
 use crate::{
     service::{BackendRequest, BackendResponse, CoreRequest, CoreResponse},
-    GetThreadMessagesRequest, NewThreadInGroupRequest,
+    GetThreadMessagesRequest, NewThreadInSessionRequest,
 };
 
 const GENERATE_PATH: &str = "/generate";
 const GENERATE_STREAM_PATH: &str = "/generate_stream";
 const GET_LAST_THREAD_INFO_METHOD: &str = "/threads/last";
 const GET_THREAD_MESSAGES_METHOD_PREFIX: &str = "/threads/";
-const THREAD_GROUP_PREFIX: &str = "/thread_groups/";
+const SESSIONS_PREFIX: &str = "/sessions/";
 const GET_ALL_THREAD_INFOS_METHOD: &str = "/threads";
 const LISTEN_THREAD_PATH: &str = "/listen_thread";
+
+fn percent_encode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+fn percent_decode(value: &str) -> String {
+    url::form_urlencoded::parse(value.as_bytes())
+        .next()
+        .map(|(k, _)| k.into_owned())
+        .unwrap_or_else(|| value.to_string())
+}
 
 #[async_trait::async_trait]
 impl RequestHttpConvert<CoreRequest> for CoreRequest {
@@ -48,43 +59,43 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
             }
             LISTEN_THREAD_PATH => {
                 validate_method(&request, Method::POST)?;
-                CoreRequest::ListenOnThread(parse_request(request).await?)
+                CoreRequest::SubscribeToThread(parse_request(request).await?)
             }
             _ => {
                 if path.starts_with(GET_THREAD_MESSAGES_METHOD_PREFIX)
                     && request.method() == &Method::GET
                 {
                     let split: Vec<_> = path.split(&['/', '\\']).collect();
-                    let id = split[1].to_string();
-                    if split.len() == 2 {
+                    let id = split[2].to_string();
+                    if split.len() == 3 {
                         return Ok(Some(CoreRequest::GetThreadMessages(
                             GetThreadMessagesRequest {
                                 thread_id: Some(id),
-                                thread_group_id: None,
-                                tag: None,
+                                session_id: None,
+                                session_tag: None,
                             },
                         )));
                     }
                 }
-                if path.starts_with(THREAD_GROUP_PREFIX) && request.method() == &Method::GET {
+                if path.starts_with(SESSIONS_PREFIX) {
                     let split: Vec<_> = path.split(&['/', '\\']).collect();
-                    if split.len() == 3 {
-                        if request.method() == &Method::GET {
-                            return Ok(Some(CoreRequest::GetThreadMessages(
+                    if split.len() == 4 {
+                        return match request.method() {
+                            &Method::GET => Ok(Some(CoreRequest::GetThreadMessages(
                                 GetThreadMessagesRequest {
                                     thread_id: None,
-                                    thread_group_id: Some(split[1].to_string()),
-                                    tag: Some(split[2].to_string()),
+                                    session_id: Some(percent_decode(&split[2])),
+                                    session_tag: Some(percent_decode(&split[3])),
                                 },
-                            )));
-                        } else if request.method() == &Method::POST {
-                            return Ok(Some(CoreRequest::NewThreadInGroup(
-                                NewThreadInGroupRequest {
-                                    thread_group_id: split[1].to_string(),
-                                    tag: split[2].to_string(),
+                            ))),
+                            &Method::POST => Ok(Some(CoreRequest::NewThreadInSession(
+                                NewThreadInSessionRequest {
+                                    session_id: percent_decode(&split[2]),
+                                    tag: percent_decode(&split[3]),
                                 },
-                            )));
-                        }
+                            ))),
+                            _ => Ok(None),
+                        };
                     }
                 }
                 return Ok(None);
@@ -115,21 +126,35 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
             )?,
             CoreRequest::GetThreadMessages(req) => {
                 let path = if let Some(id) = &req.thread_id {
-                    format!("{}{}", GET_THREAD_MESSAGES_METHOD_PREFIX, id)
-                } else if let (Some(group_id), Some(tag)) = (&req.thread_group_id, &req.tag) {
-                    format!("{}{}/{}", THREAD_GROUP_PREFIX, group_id, tag)
+                    format!(
+                        "{}{}",
+                        GET_THREAD_MESSAGES_METHOD_PREFIX,
+                        percent_encode(id)
+                    )
+                } else if let (Some(session_id), Some(tag)) = (&req.session_id, &req.session_tag) {
+                    format!(
+                        "{}{}/{}",
+                        SESSIONS_PREFIX,
+                        percent_encode(&session_id),
+                        percent_encode(&tag)
+                    )
                 } else {
                     return Ok(None);
                 };
 
                 serialize_to_http_request(base_url, &path, Method::GET, &())?
             }
-            CoreRequest::NewThreadInGroup(req) => {
-                let path = format!("{}{}/{}", THREAD_GROUP_PREFIX, req.thread_group_id, req.tag);
+            CoreRequest::NewThreadInSession(req) => {
+                let path = format!(
+                    "{}{}/{}",
+                    SESSIONS_PREFIX,
+                    percent_encode(&req.session_id),
+                    percent_encode(&req.tag)
+                );
                 serialize_to_http_request(base_url, &path, Method::POST, &())?
             }
-            CoreRequest::ListenOnThread(request) => {
-                serialize_to_http_request(base_url, LISTEN_THREAD_PATH, Method::GET, &request)?
+            CoreRequest::SubscribeToThread(request) => {
+                serialize_to_http_request(base_url, LISTEN_THREAD_PATH, Method::POST, &request)?
             }
             _ => return Ok(None),
         };
@@ -160,8 +185,11 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                 CoreRequest::GetThreadMessages { .. } => ServiceResponse::Single(
                     CoreResponse::GetThreadMessages(parse_response(response).await?),
                 ),
-                CoreRequest::NewThreadInGroup(_) => ServiceResponse::Single(
-                    CoreResponse::NewThreadInGroup(parse_response(response).await?),
+                CoreRequest::NewThreadInSession(_) => ServiceResponse::Single(
+                    CoreResponse::NewThreadInSession(parse_response(response).await?),
+                ),
+                CoreRequest::SubscribeToThread(_) => ServiceResponse::Multiple(
+                    notification_sse_stream(original_request.clone(), response),
                 ),
                 _ => return Ok(None),
             },
@@ -169,7 +197,7 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                 CoreRequest::GenerationStream(_) => {
                     CoreResponse::GenerationStream(parse_from_value(event)?)
                 }
-                CoreRequest::ListenOnThread { .. } => {
+                CoreRequest::SubscribeToThread { .. } => {
                     CoreResponse::ListenOnThread(parse_from_value(event)?)
                 }
                 _ => return Ok(None),
@@ -197,9 +225,12 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                 CoreResponse::GetThreadMessages(response) => ModalHttpResponse::Single(
                     serialize_to_http_response(&response, StatusCode::OK)?,
                 ),
-                CoreResponse::NewThreadInGroup(response) => ModalHttpResponse::Single(
+                CoreResponse::NewThreadInSession(response) => ModalHttpResponse::Single(
                     serialize_to_http_response(&response, StatusCode::OK)?,
                 ),
+                CoreResponse::ListenOnThread(response) => {
+                    ModalHttpResponse::Event(serde_json::to_value(response).unwrap())
+                }
                 _ => return Ok(None),
             },
             ServiceResponse::Multiple(stream) => {

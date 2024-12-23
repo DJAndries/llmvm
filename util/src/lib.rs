@@ -8,6 +8,7 @@ const THREADS_DIR: &str = "threads";
 const LOGS_DIR: &str = "logs";
 const CONFIG_DIR: &str = "config";
 const WEIGHTS_DIR: &str = "weights";
+const SESSIONS_DIR: &str = "sessions";
 
 pub const PROJECT_DIR_NAME: &str = ".llmvm";
 
@@ -18,7 +19,7 @@ pub enum DirType {
     Logs,
     Config,
     Weights,
-    MiscData,
+    Sessions,
 }
 
 impl Display for DirType {
@@ -33,7 +34,7 @@ impl Display for DirType {
                 DirType::Logs => LOGS_DIR,
                 DirType::Config => CONFIG_DIR,
                 DirType::Weights => WEIGHTS_DIR,
-                DirType::MiscData => "",
+                DirType::Sessions => SESSIONS_DIR,
             }
         )
     }
@@ -51,13 +52,7 @@ fn get_home_file_path(dir_type: DirType, filename: &str) -> Option<PathBuf> {
     get_home_dirs().map(|p| {
         let subdir = match dir_type {
             DirType::Config => p.config_dir().into(),
-            _ => {
-                let subdir_path = dir_type.to_string();
-                match dir_type.to_string().is_empty() {
-                    true => p.data_dir().into(),
-                    false => p.data_dir().join(subdir_path),
-                }
-            }
+            _ => p.data_dir().join(dir_type.to_string()),
         };
         create_dir_all(&subdir).ok();
         subdir.join(filename)
@@ -69,11 +64,7 @@ pub fn get_file_path(dir_type: DirType, filename: &str, will_create: bool) -> Op
     let project_dir = get_project_dir();
     if let Some(project_dir) = project_dir {
         if project_dir.exists() {
-            let subdir_path = dir_type.to_string();
-            let type_dir = match subdir_path.is_empty() {
-                true => project_dir,
-                false => project_dir.join(subdir_path),
-            };
+            let type_dir = project_dir.join(dir_type.to_string());
             create_dir_all(&type_dir).ok();
             let file_dir = type_dir.join(filename);
             if will_create || file_dir.exists() {

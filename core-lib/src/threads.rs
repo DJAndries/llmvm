@@ -1,18 +1,18 @@
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use llmvm_protocol::{
-    GenerationRequest, GetThreadMessagesRequest, ListenOnThreadRequest, Message, MessageRole,
-    ThreadEvent, ThreadInfo,
+    GenerationRequest, GetThreadMessagesRequest, Message, MessageRole, SubscribeToThreadRequest,
+    ThreadEvent, ThreadInfo, Tool,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use notify::{RecommendedWatcher, Watcher};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::{fs, sync::mpsc};
+use tokio::{fs, sync::mpsc, task::JoinHandle, time::sleep};
 
 use crate::{error::CoreError, Result};
 
@@ -21,15 +21,36 @@ fn thread_path(id: &str) -> Result<PathBuf> {
         .ok_or(CoreError::UserHomeNotFound)
 }
 
-const THREAD_GROUPS_FILENAME: &str = "thread_groups.json";
+pub(super) const SESSION_INFO_FILENAME: &str = "info.json";
+const MAX_SUB_AGE_SECS: u64 = 30;
 
-fn thread_groups_path() -> Result<PathBuf> {
-    return get_file_path(DirType::MiscData, THREAD_GROUPS_FILENAME, true)
-        .ok_or(CoreError::UserHomeNotFound);
+async fn create_and_get_session_path(id: &str, tag: &str) -> Result<PathBuf> {
+    let path = session_path(id, tag)?;
+    fs::create_dir_all(&path).await?;
+    Ok(path)
 }
 
-// map of thread group ids, to maps of tags mapped to thread ids
-type ThreadGroupMap = HashMap<String, HashMap<String, String>>;
+fn session_path(id: &str, tag: &str) -> Result<PathBuf> {
+    get_file_path(
+        DirType::Sessions,
+        &url::form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>(),
+        true,
+    )
+    .map(|p| p.join(tag))
+    .ok_or(CoreError::UserHomeNotFound)
+}
+
+#[derive(Serialize, Deserialize)]
+struct SessionInfo {
+    thread_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(super) struct SessionSubscriberInfo {
+    #[serde(skip)]
+    pub client_id: String,
+    pub tools: Option<Vec<Tool>>,
+}
 
 async fn clean_old_threads_in_dir(directory: &Path, ttl_secs: u64) -> Result<()> {
     let ttl_duration = Duration::from_secs(ttl_secs);
@@ -161,23 +182,18 @@ pub(super) async fn get_thread_messages(
 ) -> Result<(Vec<Message>, String)> {
     let thread_id = if let Some(id) = &request.thread_id {
         id.clone()
-    } else if let (Some(group_id), Some(tag)) = (&request.thread_group_id, &request.tag) {
-        let thread_groups = get_thread_groups().await?;
-        let thread_id = match thread_groups.get(group_id).and_then(|group| group.get(tag)) {
-            Some(thread_id) => {
-                let thread_path = thread_path(&thread_id)?;
-                match fs::try_exists(&thread_path).await? {
-                    true => Some(thread_id.clone()),
-                    false => None,
-                }
-            }
-            None => None,
+    } else if let (Some(session_id), Some(tag)) = (&request.session_id, &request.session_tag) {
+        let info = get_session_info(&session_id, &tag).await?;
+        let thread_path = thread_path(&info.thread_id)?;
+        let thread_id = match fs::try_exists(&thread_path).await? {
+            true => Some(info.thread_id),
+            false => None,
         };
         match thread_id {
             Some(thread_id) => thread_id,
             None => {
                 // Create the thread file so future listen on thread calls will succeed
-                let new_thread_id = save_new_thread_in_group(group_id.clone(), tag.clone()).await?;
+                let new_thread_id = start_new_thread_in_session(session_id, tag).await?;
                 save_thread(&new_thread_id, Vec::new()).await?;
                 new_thread_id
             }
@@ -199,13 +215,9 @@ pub(super) async fn get_thread_messages(
 fn get_thread_messages_sync(request: &GetThreadMessagesRequest) -> Result<Vec<Message>> {
     let thread_id = if let Some(id) = &request.thread_id {
         id.clone()
-    } else if let (Some(group_id), Some(tag)) = (&request.thread_group_id, &request.tag) {
-        let thread_groups = get_thread_groups_sync()?;
-        thread_groups
-            .get(group_id)
-            .and_then(|group| group.get(tag))
-            .unwrap_or(&new_thread_id())
-            .clone()
+    } else if let (Some(group_id), Some(tag)) = (&request.session_id, &request.session_tag) {
+        let info = get_session_info_sync(&group_id, &tag)?;
+        info.thread_id
     } else {
         return Err(CoreError::ThreadNotFound);
     };
@@ -217,58 +229,116 @@ fn get_thread_messages_sync(request: &GetThreadMessagesRequest) -> Result<Vec<Me
     })
 }
 
-pub(super) async fn save_new_thread_in_group(group_id: String, tag: String) -> Result<String> {
-    let path = thread_groups_path()?;
-    let mut map: ThreadGroupMap = match fs::try_exists(&path).await.unwrap_or_default() {
-        true => serde_json::from_slice(&fs::read(&path).await?)?,
-        false => ThreadGroupMap::new(),
-    };
+pub(super) async fn start_new_thread_in_session(session_id: &str, tag: &str) -> Result<String> {
+    let path = create_and_get_session_path(&session_id, &tag)
+        .await?
+        .join(SESSION_INFO_FILENAME);
 
     let thread_id = new_thread_id();
     save_thread(&thread_id, Vec::new()).await?;
-    map.entry(group_id.to_string())
-        .or_insert_with(HashMap::new)
-        .insert(tag.to_string(), thread_id.clone());
+    let info = SessionInfo {
+        thread_id: thread_id.clone(),
+    };
 
-    fs::write(path, serde_json::to_vec(&map)?).await?;
+    fs::write(path, serde_json::to_vec(&info)?).await?;
     Ok(thread_id)
 }
 
-fn get_thread_groups_sync() -> Result<ThreadGroupMap> {
-    let path = thread_groups_path()?;
-    let map: ThreadGroupMap = match path.exists() {
+fn get_session_info_sync(session_id: &str, tag: &str) -> Result<SessionInfo> {
+    let path = session_path(session_id, tag)?.join(SESSION_INFO_FILENAME);
+    let info: SessionInfo = match path.exists() {
         true => serde_json::from_slice(&std::fs::read(&path)?)?,
-        false => ThreadGroupMap::new(),
+        false => return Err(CoreError::ThreadNotFound),
     };
-    Ok(map)
+    Ok(info)
 }
 
-async fn get_thread_groups() -> Result<ThreadGroupMap> {
-    let path = thread_groups_path()?;
-    let map: ThreadGroupMap = match fs::try_exists(&path).await.unwrap_or_default() {
+async fn get_session_info(session_id: &str, tag: &str) -> Result<SessionInfo> {
+    let path = create_and_get_session_path(session_id, tag)
+        .await?
+        .join(SESSION_INFO_FILENAME);
+    let info: SessionInfo = match fs::try_exists(&path).await.unwrap_or_default() {
         true => serde_json::from_slice(&fs::read(&path).await?)?,
-        false => ThreadGroupMap::new(),
+        false => return Err(CoreError::ThreadNotFound),
     };
-    Ok(map)
+    Ok(info)
 }
 
-pub(super) async fn listen_on_thread(
-    request: ListenOnThreadRequest,
-) -> Result<(mpsc::UnboundedReceiver<ThreadEvent>, RecommendedWatcher)> {
+pub struct SubscriptionHandle {
+    #[allow(dead_code)]
+    watcher: RecommendedWatcher,
+    update_task: Option<JoinHandle<()>>,
+    subscriber_path: Option<PathBuf>,
+}
+
+impl SubscriptionHandle {
+    pub fn new(watcher: RecommendedWatcher, subscriber_path: Option<PathBuf>) -> Result<Self> {
+        let update_task = subscriber_path.clone().map(|path| {
+            tokio::spawn(async move {
+                loop {
+                    // update last modified time
+                    let _ = fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(false)
+                        .open(&path)
+                        .await;
+
+                    // Sleep for 15 seconds
+                    sleep(Duration::from_secs(15)).await;
+                }
+            })
+        });
+
+        Ok(Self {
+            watcher,
+            update_task,
+            subscriber_path,
+        })
+    }
+}
+
+impl Drop for SubscriptionHandle {
+    fn drop(&mut self) {
+        if let Some(task) = self.update_task.take() {
+            task.abort();
+        }
+        if let Some(path) = &self.subscriber_path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+pub(super) async fn subscribe_to_thread(
+    request: SubscribeToThreadRequest,
+) -> Result<(mpsc::UnboundedReceiver<ThreadEvent>, SubscriptionHandle)> {
     let (tx, rx) = mpsc::unbounded_channel();
 
-    let using_tag = request.tag.is_some();
+    let (session_path, subscriber_file) = match (&request.session_id, &request.session_tag) {
+        (Some(session_id), Some(session_tag)) => {
+            let session_path = create_and_get_session_path(session_id, session_tag).await?;
+
+            let subscriber_file = session_path.join(format!("{}.json", request.client_id));
+            let subscriber_info = SessionSubscriberInfo {
+                client_id: Default::default(),
+                tools: request.tools.clone(),
+            };
+            fs::write(&subscriber_file, serde_json::to_vec(&subscriber_info)?).await?;
+
+            (Some(session_path), Some(subscriber_file))
+        }
+        _ => (None, None),
+    };
+
     let client_id = request.client_id;
     let get_msgs_req = GetThreadMessagesRequest {
         thread_id: request.thread_id,
-        thread_group_id: request.thread_group_id,
-        tag: request.tag,
+        session_id: request.session_id,
+        session_tag: request.session_tag,
     };
 
-    let thread_groups_path = thread_groups_path()?;
-
     // Get initial messages and store their count
-    let (initial_messages, thread_id) = get_thread_messages(&get_msgs_req).await?;
+    let (initial_messages, mut thread_id) = get_thread_messages(&get_msgs_req).await?;
     let mut last_count = initial_messages.len();
 
     let thread_path = thread_path(&thread_id)?;
@@ -277,51 +347,99 @@ pub(super) async fn listen_on_thread(
     let mut watcher = notify::recommended_watcher(
         move |res: std::result::Result<notify::Event, notify::Error>| {
             if let Ok(event) = res {
-                if let notify::EventKind::Modify(_) = &event.kind {
-                    let event_path = event.paths.first().unwrap();
-                    if event_path.file_name().unwrap_or_default() == THREAD_GROUPS_FILENAME
-                        && get_msgs_req.thread_group_id.is_some()
-                    {
-                        if let Ok(thread_groups) = get_thread_groups_sync() {
-                            if let Some(new_thread_id) = thread_groups
-                                .get(get_msgs_req.thread_group_id.as_ref().unwrap())
-                                .and_then(|group| group.get(get_msgs_req.tag.as_ref().unwrap()))
-                            {
-                                // thread id in group file does not match the one
+                let event_path = event.paths.first().unwrap();
+                let filename = event_path.file_name().unwrap_or_default().to_string_lossy();
+
+                match &event.kind {
+                    notify::EventKind::Modify(_) => {
+                        if filename == SESSION_INFO_FILENAME && get_msgs_req.session_id.is_some() {
+                            if let Ok(info) = get_session_info_sync(
+                                &get_msgs_req.session_id.as_ref().unwrap(),
+                                &get_msgs_req.session_tag.as_ref().unwrap(),
+                            ) {
+                                // thread id in session info file does not match the one
                                 // we have cached, so there must be a new thread
-                                if new_thread_id != &thread_id {
+                                if info.thread_id != thread_id {
+                                    thread_id = info.thread_id.clone();
                                     let _ = tx.send(ThreadEvent::NewThread {
-                                        thread_id: new_thread_id.clone(),
+                                        thread_id: thread_id.clone(),
                                     });
                                 }
                             }
-                        }
-                    } else {
-                        if let Ok(new_messages) = get_thread_messages_sync(&get_msgs_req) {
-                            if new_messages.len() <= last_count {
-                                return;
-                            }
-                            // Send all new messages since last count
-                            for message in new_messages[last_count..].iter().cloned() {
-                                if let Some(msg_client_id) = &message.client_id {
-                                    if &client_id == msg_client_id {
-                                        continue;
-                                    }
+                        } else if filename.starts_with(&thread_id) {
+                            if let Ok(new_messages) = get_thread_messages_sync(&get_msgs_req) {
+                                if new_messages.len() <= last_count {
+                                    return;
                                 }
-                                let _ = tx.send(ThreadEvent::Message { message });
+                                // Send all new messages since last count
+                                for message in new_messages[last_count..].iter().cloned() {
+                                    if let Some(msg_client_id) = &message.client_id {
+                                        if &client_id == msg_client_id {
+                                            continue;
+                                        }
+                                    }
+                                    let _ = tx.send(ThreadEvent::Message { message });
+                                }
+                                last_count = new_messages.len();
                             }
-                            last_count = new_messages.len();
                         }
                     }
+                    notify::EventKind::Create(_) => {
+                        if filename != SESSION_INFO_FILENAME && !filename.starts_with(&thread_id) {
+                            if let Some(client_id) = filename.strip_suffix(".json") {
+                                let _ = tx.send(ThreadEvent::NewSubscriber {
+                                    client_id: client_id.to_string(),
+                                });
+                            }
+                        }
+                    }
+                    _ => (),
                 }
             }
         },
     )?;
 
     watcher.watch(&thread_path, notify::RecursiveMode::NonRecursive)?;
-    if using_tag {
-        watcher.watch(&thread_groups_path, notify::RecursiveMode::NonRecursive)?;
+    if let Some(session_info_path) = session_path {
+        watcher.watch(&session_info_path, notify::RecursiveMode::NonRecursive)?;
     }
 
-    Ok((rx, watcher))
+    Ok((rx, SubscriptionHandle::new(watcher, subscriber_file)?))
+}
+
+pub(super) async fn get_session_subscribers(
+    session_id: &str,
+    tag: &str,
+) -> Result<Vec<SessionSubscriberInfo>> {
+    let session_path = create_and_get_session_path(session_id, tag).await?;
+    let mut subscribers = Vec::new();
+    let now = SystemTime::now();
+
+    let mut entries = fs::read_dir(&session_path).await?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let filename = entry.file_name();
+        let filename = filename.to_string_lossy();
+
+        if !filename.ends_with(".json") || filename == SESSION_INFO_FILENAME {
+            continue;
+        }
+
+        if let Some(client_id) = filename.strip_suffix(".json") {
+            let age = now
+                .duration_since(entry.metadata().await?.modified()?)
+                .unwrap();
+            // Subscribers will actively update their last modified time periodically
+            // If the subscriber file has not been updated in a while, then ignore them and assume they're no longer active
+            if age.as_secs() >= MAX_SUB_AGE_SECS {
+                fs::remove_file(entry.path()).await?;
+                continue;
+            }
+            let mut info =
+                serde_json::from_slice::<SessionSubscriberInfo>(&fs::read(entry.path()).await?)?;
+            info.client_id = client_id.to_string();
+            subscribers.push(info);
+        }
+    }
+
+    Ok(subscribers)
 }

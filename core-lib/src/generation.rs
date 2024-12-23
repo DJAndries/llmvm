@@ -14,8 +14,11 @@ use tracing::{debug, info};
 use crate::error::CoreError;
 use crate::presets::load_preset;
 use crate::prompts::ReadyPrompt;
-use crate::threads::get_thread_messages;
+use crate::threads::{get_session_subscribers, get_thread_messages, SessionSubscriberInfo};
+use crate::tools::{generate_text_tools_prompt, inject_client_id_into_tools};
 use crate::{LLMVMCore, Result};
+
+const TEXT_TOOLS_PARAM_NAME: &str = "text_tools";
 
 fn merge_generation_parameters(
     preset_parameters: GenerationParameters,
@@ -48,6 +51,15 @@ fn merge_generation_parameters(
             .prompt_parameters
             .or(preset_parameters.prompt_parameters),
     }
+}
+
+pub(super) struct GenerationPreparation {
+    pub backend_request: BackendGenerationRequest,
+    pub model_description: ModelDescription,
+    pub thread_messages_to_save: Option<Vec<Message>>,
+    pub existing_thread_id: Option<String>,
+    pub subscriber_infos: Option<Vec<SessionSubscriberInfo>>,
+    pub text_tools_used: bool,
 }
 
 impl LLMVMCore {
@@ -97,12 +109,7 @@ impl LLMVMCore {
     pub(super) async fn prepare_for_generate(
         &self,
         request: &GenerationRequest,
-    ) -> Result<(
-        BackendGenerationRequest,
-        ModelDescription,
-        Option<Vec<Message>>,
-        Option<String>,
-    )> {
+    ) -> Result<GenerationPreparation> {
         let mut parameters = match &request.preset_id {
             Some(preset_id) => {
                 let mut parameters = load_preset(&preset_id).await?;
@@ -128,9 +135,26 @@ impl LLMVMCore {
         let model_description =
             ModelDescription::from_str(&model).map_err(|_| CoreError::ModelDescriptionParse)?;
         let is_chat_model = model_description.is_chat_model();
-        let prompt_parameters = parameters
+        let mut prompt_parameters = parameters
             .prompt_parameters
             .unwrap_or(Value::Object(Default::default()));
+
+        let mut text_tools_used = false;
+        let subscriber_infos = match (&request.session_id, &request.session_tag) {
+            (Some(session_id), Some(session_tag)) => {
+                let mut subscribers = get_session_subscribers(&session_id, &session_tag).await?;
+                inject_client_id_into_tools(&mut subscribers);
+
+                let tools_prompt = generate_text_tools_prompt(&subscribers);
+                if !tools_prompt.is_empty() {
+                    text_tools_used = true;
+                    prompt_parameters[TEXT_TOOLS_PARAM_NAME] = tools_prompt.into();
+                }
+
+                Some(subscribers)
+            }
+            _ => None,
+        };
 
         let prompt = match parameters.custom_prompt_template {
             Some(template) => {
@@ -156,12 +180,12 @@ impl LLMVMCore {
         };
 
         let (mut thread_messages, existing_thread_id) =
-            match request.existing_thread_id.is_some() || request.thread_group_id.is_some() {
+            match request.existing_thread_id.is_some() || request.session_id.is_some() {
                 true => {
                     let (msgs, thread_id) = get_thread_messages(&GetThreadMessagesRequest {
                         thread_id: request.existing_thread_id.clone(),
-                        thread_group_id: request.thread_group_id.clone(),
-                        tag: request.thread_group_tag.clone(),
+                        session_id: request.session_id.clone(),
+                        session_tag: request.session_tag.clone(),
                     })
                     .await?;
                     (Some(msgs), Some(thread_id))
@@ -218,11 +242,14 @@ impl LLMVMCore {
             "Thread messages for requests: {:#?}",
             backend_request.thread_messages
         );
-        Ok((
+
+        Ok(GenerationPreparation {
             backend_request,
             model_description,
             thread_messages_to_save,
             existing_thread_id,
-        ))
+            subscriber_infos,
+            text_tools_used,
+        })
     }
 }

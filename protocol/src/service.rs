@@ -12,8 +12,8 @@ pub use multilink::{BoxedService, ServiceError, ServiceFuture};
 
 use crate::{
     Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
-    GenerationResponse, GetThreadMessagesRequest, ListenOnThreadRequest, Message,
-    NewThreadInGroupRequest, ThreadEvent, ThreadInfo,
+    GenerationResponse, GetThreadMessagesRequest, Message, NewThreadInSessionRequest,
+    SubscribeToThreadRequest, ThreadEvent, ThreadInfo,
 };
 
 /// Enum containing all types of backend requests.
@@ -39,8 +39,8 @@ pub enum CoreRequest {
     GetAllThreadInfos,
     GetThreadMessages(GetThreadMessagesRequest),
     InitProject,
-    ListenOnThread(ListenOnThreadRequest),
-    NewThreadInGroup(NewThreadInGroupRequest),
+    SubscribeToThread(SubscribeToThreadRequest),
+    NewThreadInSession(NewThreadInSessionRequest),
 }
 
 /// Enum containing all types of core responses.
@@ -52,8 +52,8 @@ pub enum CoreResponse {
     GetAllThreadInfos(Vec<ThreadInfo>),
     GetThreadMessages(Vec<Message>),
     InitProject,
-    ListenOnThread(Option<ThreadEvent>),
-    NewThreadInGroup(ThreadInfo),
+    ListenOnThread(ThreadEvent),
+    NewThreadInSession(ThreadInfo),
 }
 
 /// Service that receives [`BackendRequest`] values,
@@ -188,15 +188,17 @@ where
                 CoreRequest::InitProject => core
                     .init_project()
                     .map(|_| ServiceResponse::Single(CoreResponse::InitProject)),
-                CoreRequest::ListenOnThread(req) => core.listen_on_thread(req).await.map(|s| {
-                    ServiceResponse::Multiple(
-                        s.map(|resp| resp.map(|resp| CoreResponse::ListenOnThread(resp)))
-                            .boxed(),
-                    )
-                }),
-                CoreRequest::NewThreadInGroup(req) => {
-                    core.new_thread_in_group(req).await.map(|id| {
-                        ServiceResponse::Single(CoreResponse::NewThreadInGroup(ThreadInfo {
+                CoreRequest::SubscribeToThread(req) => {
+                    core.subscribe_to_thread(req).await.map(|s| {
+                        ServiceResponse::Multiple(
+                            s.map(|resp| resp.map(|resp| CoreResponse::ListenOnThread(resp)))
+                                .boxed(),
+                        )
+                    })
+                }
+                CoreRequest::NewThreadInSession(req) => {
+                    core.new_thread_in_session(req).await.map(|id| {
+                        ServiceResponse::Single(CoreResponse::NewThreadInSession(ThreadInfo {
                             id,
                             modified: None,
                         }))

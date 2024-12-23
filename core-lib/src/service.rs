@@ -4,8 +4,8 @@ use async_stream::stream;
 use futures::StreamExt;
 use llmvm_protocol::{
     error::ProtocolErrorType, service::BackendResponse, Core, GenerationRequest,
-    GenerationResponse, GetThreadMessagesRequest, ListenOnThreadRequest, Message,
-    NewThreadInGroupRequest, NotificationStream, ProtocolError, ThreadEvent, ThreadInfo,
+    GenerationResponse, GetThreadMessagesRequest, Message, NewThreadInSessionRequest,
+    NotificationStream, ProtocolError, SubscribeToThreadRequest, ThreadEvent, ThreadInfo,
 };
 use llmvm_util::{get_file_path, DirType};
 use tracing::debug;
@@ -13,9 +13,11 @@ use tracing::debug;
 use crate::{
     error::CoreError,
     threads::{
-        get_thread_infos, get_thread_messages, listen_on_thread,
-        maybe_save_thread_messages_and_get_thread_id, save_new_thread_in_group,
+        get_session_subscribers, get_thread_infos, get_thread_messages,
+        maybe_save_thread_messages_and_get_thread_id, start_new_thread_in_session,
+        subscribe_to_thread,
     },
+    tools::extract_text_tool_calls,
     LLMVMCore, PROJECT_DIR_NAME,
 };
 
@@ -26,11 +28,10 @@ impl Core for LLMVMCore {
         request: GenerationRequest,
     ) -> std::result::Result<GenerationResponse, ProtocolError> {
         async {
-            let (backend_request, model_description, thread_messages_to_save, existing_thread_id) =
-                self.prepare_for_generate(&request).await?;
+            let preparation = self.prepare_for_generate(&request).await?;
 
             let response = self
-                .send_generate_request(backend_request, &model_description)
+                .send_generate_request(preparation.backend_request, &preparation.model_description)
                 .await?;
 
             debug!("Response: {}", response.response);
@@ -38,14 +39,22 @@ impl Core for LLMVMCore {
             let thread_id = maybe_save_thread_messages_and_get_thread_id(
                 &request,
                 response.response.clone(),
-                thread_messages_to_save,
-                existing_thread_id,
+                preparation.thread_messages_to_save,
+                preparation.existing_thread_id,
             )
             .await?;
+
+            let mut tool_calls = Vec::new();
+            if let Some(subscriber_infos) = preparation.subscriber_infos {
+                if preparation.text_tools_used {
+                    tool_calls = extract_text_tool_calls(&subscriber_infos, &response.response)?;
+                }
+            }
 
             Ok(GenerationResponse {
                 response: response.response,
                 thread_id,
+                tool_calls,
             })
         }
         .await
@@ -57,11 +66,10 @@ impl Core for LLMVMCore {
         request: GenerationRequest,
     ) -> std::result::Result<NotificationStream<GenerationResponse>, ProtocolError> {
         async {
-            let (backend_request, model_description, thread_messages_to_save, existing_thread_id) =
-                self.prepare_for_generate(&request).await?;
+            let preparation = self.prepare_for_generate(&request).await?;
 
             let mut stream = self
-                .send_generate_request_for_stream(backend_request, &model_description)
+                .send_generate_request_for_stream(preparation.backend_request, &preparation.model_description)
                 .await?;
 
             Ok(stream! {
@@ -74,6 +82,7 @@ impl Core for LLMVMCore {
                                 yield Ok(GenerationResponse {
                                     response: response.response,
                                     thread_id: None,
+                                    tool_calls: Default::default(),
                                 });
                             }
                             _ => yield Err(CoreError::UnexpectedServiceResponse.into())
@@ -83,8 +92,14 @@ impl Core for LLMVMCore {
                         }
                     }
                 }
-                if let Ok(thread_id) = maybe_save_thread_messages_and_get_thread_id(&request, full_response, thread_messages_to_save, existing_thread_id).await {
-                    yield Ok(GenerationResponse { response: String::new(), thread_id });
+                let mut tool_calls = Vec::new();
+                if let Some(subscriber_infos) = preparation.subscriber_infos {
+                    if preparation.text_tools_used {
+                        tool_calls = extract_text_tool_calls(&subscriber_infos, &full_response)?;
+                    }
+                }
+                if let Ok(thread_id) = maybe_save_thread_messages_and_get_thread_id(&request, full_response, preparation.thread_messages_to_save, preparation.existing_thread_id).await {
+                    yield Ok(GenerationResponse { response: String::new(), thread_id, tool_calls });
                 }
             }.boxed())
         }
@@ -128,20 +143,25 @@ impl Core for LLMVMCore {
         Ok(())
     }
 
-    async fn listen_on_thread(
+    async fn subscribe_to_thread(
         &self,
-        request: ListenOnThreadRequest,
-    ) -> Result<NotificationStream<Option<ThreadEvent>>, ProtocolError> {
+        request: SubscribeToThreadRequest,
+    ) -> Result<NotificationStream<ThreadEvent>, ProtocolError> {
         async {
             Ok(stream! {
-                let (mut rx, mut watcher) = listen_on_thread(request.clone()).await?;
-                // Send dummy None value so that the client can immediately access and monitor the notification stream
-                yield Ok(None);
+                let (mut rx, mut watcher) = subscribe_to_thread(request.clone()).await?;
+                let current_subscribers = match (&request.session_id, &request.session_tag) {
+                    (Some(session_id), Some(session_tag)) => {
+                        Some(get_session_subscribers(session_id, session_tag).await?.into_iter().map(|i| i.client_id).collect())
+                    },
+                    _ => None,
+                };
+                yield Ok(ThreadEvent::Start { current_subscribers });
                 while let Some(message) = rx.recv().await {
                     if let ThreadEvent::NewThread { .. } = &message {
-                        (rx, watcher) = listen_on_thread(request.clone()).await?;
+                        (rx, watcher) = subscribe_to_thread(request.clone()).await?;
                     }
-                    yield Ok(Some(message));
+                    yield Ok(message);
                 }
                 drop(watcher);
             }
@@ -151,11 +171,11 @@ impl Core for LLMVMCore {
         .map_err(|e: CoreError| e.into())
     }
 
-    async fn new_thread_in_group(
+    async fn new_thread_in_session(
         &self,
-        request: NewThreadInGroupRequest,
+        request: NewThreadInSessionRequest,
     ) -> Result<String, ProtocolError> {
-        save_new_thread_in_group(request.thread_group_id, request.tag)
+        start_new_thread_in_session(&request.session_id, &request.tag)
             .await
             .map_err(|e| e.into())
     }

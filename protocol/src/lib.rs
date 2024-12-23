@@ -106,15 +106,15 @@ pub trait Core: Send + Sync {
     fn init_project(&self) -> Result<(), ProtocolError>;
 
     /// Receive notifications for messages on a given thread
-    async fn listen_on_thread(
+    async fn subscribe_to_thread(
         &self,
-        request: ListenOnThreadRequest,
-    ) -> Result<NotificationStream<Option<ThreadEvent>>, ProtocolError>;
+        request: SubscribeToThreadRequest,
+    ) -> Result<NotificationStream<ThreadEvent>, ProtocolError>;
 
-    /// Creates a new thread within a thread group, returning the thread id
-    async fn new_thread_in_group(
+    /// Creates a new thread within a session, returning the thread id
+    async fn new_thread_in_session(
         &self,
-        request: NewThreadInGroupRequest,
+        request: NewThreadInSessionRequest,
     ) -> Result<String, ProtocolError>;
 }
 
@@ -124,7 +124,7 @@ pub struct BackendGenerationRequest {
     /// The id of the language model.
     /// The format of the id is `<backend name>/<model provider name>/<model name>`.
     pub model: String,
-    /// The complete prompt to present to the model.
+    /// The complete prompt to present to the modelv
     pub prompt: String,
     /// Maximum amount of tokens to generate.
     pub max_tokens: u64,
@@ -173,10 +173,10 @@ pub struct GenerationRequest {
     pub custom_prompt: Option<String>,
     /// An existing thread id for loadlng previous messages.
     pub existing_thread_id: Option<String>,
-    /// ID for a thread group. To be used in place of `existing_thread_id`.
-    pub thread_group_id: Option<String>,
-    /// ID for a thread group. If `thread_group_id` is provided, this must be provided.
-    pub thread_group_tag: Option<String>,
+    /// ID for a session. To be used in place of `existing_thread_id`.
+    pub session_id: Option<String>,
+    /// Tag for a session. If `session_id` is provided, this must be provided.
+    pub session_tag: Option<String>,
     /// If true, the prompt and response will be saved to the existing thread id
     /// or a new thread.
     pub save_thread: bool,
@@ -192,6 +192,21 @@ pub struct GenerationResponse {
     /// Thread id containing the prompt and newly generated response.
     /// Only provided if `save_thread` is set to true in the associated request.
     pub thread_id: Option<String>,
+    /// Tool calls made by the model
+    pub tool_calls: Vec<ToolCall>,
+}
+
+/// Represents a tool call from a model
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// ID of the tool call, if any
+    pub id: Option<String>,
+    /// Name of the tool function
+    pub name: String,
+    /// ID of the client providing the tool
+    pub client_id: String,
+    /// Arguments of the function
+    pub arguments: Value,
 }
 
 /// A parsed model id data structure.
@@ -209,33 +224,35 @@ pub struct ModelDescription {
 /// Request to retrieve existing thread messages.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GetThreadMessagesRequest {
-    /// ID of thread to listen on. If `thread_group_id` and `tag` are not provided, this must be provided.
+    /// ID of thread to listen on. If `session_id` and `tag` are not provided, this must be provided.
     pub thread_id: Option<String>,
-    /// ID of thread group to listen on. If `thread_id` is not provided, this must be provided.
-    pub thread_group_id: Option<String>,
-    /// Tag of thread within the group. If `thread_id` is not provided, this must be provided.
-    pub tag: Option<String>,
+    /// ID of session to listen on. If `thread_id` is not provided, this must be provided.
+    pub session_id: Option<String>,
+    /// Tag of thread within the session. If `thread_id` is not provided, this must be provided.
+    pub session_tag: Option<String>,
 }
 
 /// Request to listen on thread messages
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ListenOnThreadRequest {
-    /// ID of thread to listen on. If `thread_group_id` and `tag` are not provided, this must be provided.
+pub struct SubscribeToThreadRequest {
+    /// ID of thread to subscribe to. If `session_id` and `tag` are not provided, this must be provided.
     pub thread_id: Option<String>,
-    /// ID of thread group to listen on. If `thread_id` is not provided, this must be provided.
-    pub thread_group_id: Option<String>,
-    /// Tag of thread within the group. If `thread_id` is not provided, this must be provided.
-    pub tag: Option<String>,
+    /// ID of session to subscribe to. If `thread_id` is not provided, this must be provided.
+    pub session_id: Option<String>,
+    /// Tag of thread within the session. If `thread_id` is not provided, this must be provided.
+    pub session_tag: Option<String>,
     /// Random ID of the client to be used over the course of a session.
     pub client_id: String,
+    /// Tools to make available for future messages on the thread.
+    pub tools: Option<Vec<Tool>>,
 }
 
-/// Request to start a new thread within a given thread group
+/// Request to start a new thread within a given session
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewThreadInGroupRequest {
-    /// ID of thread group
-    pub thread_group_id: String,
-    /// Tag of thread within the group
+pub struct NewThreadInSessionRequest {
+    /// ID of session
+    pub session_id: String,
+    /// Tag of thread within the session
     pub tag: String,
 }
 
@@ -243,10 +260,38 @@ pub struct NewThreadInGroupRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ThreadEvent {
+    /// Notes the start of the session subscription
+    Start {
+        current_subscribers: Option<Vec<String>>,
+    },
     /// New message on thread
     Message { message: Message },
-    /// New thread ID created, only dispatched for thread group listening.
+    /// New thread ID created, only dispatched for session listening.
     NewThread { thread_id: String },
+    /// New subscriber listening on session
+    NewSubscriber { client_id: String },
+}
+
+/// Tool definition to be used for function calling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tool {
+    /// Name of tool
+    pub name: String,
+    /// Description of tool
+    pub description: String,
+    /// JSON schema of tool,
+    pub input_schema: Value,
+    /// Type of tool
+    pub tool_type: ToolType,
+}
+
+/// Type of tool definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ToolType {
+    /// Instruct model to call tool via chat text
+    Text,
+    /// Use native function calling provided by model
+    Structured,
 }
 
 impl ModelDescription {

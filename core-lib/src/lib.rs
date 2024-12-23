@@ -13,6 +13,7 @@ pub mod presets;
 pub mod prompts;
 pub mod service;
 mod threads;
+mod tools;
 
 use llmvm_protocol::http::client::{HttpClient, HttpClientConfig};
 use llmvm_protocol::service::{BackendRequest, BackendResponse};

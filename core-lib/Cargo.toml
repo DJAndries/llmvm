@@ -21,7 +21,9 @@ rust-embed = "6.6"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-time = { version = "0.3", features = ["formatting", "local-offset"] }
+time = { version = "0.3", features = ["formatting", "local-offset", "serde"] }
 tokio = { workspace = true, features = ["fs"] }
 toml = "0.7"
 tracing = { workspace = true }
+url = { workspace = true }
+

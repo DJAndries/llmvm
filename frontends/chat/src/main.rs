@@ -13,7 +13,7 @@ use llmvm_protocol::{
     service::{util::build_core_service_from_config, BoxedService, CoreRequest, CoreResponse},
     stdio::client::StdioClientConfig,
     ConfigExampleSnippet, GenerationParameters, GenerationRequest, GetThreadMessagesRequest,
-    ListenOnThreadRequest, Message, MessageRole, NewThreadInGroupRequest, ServiceResponse,
+    Message, MessageRole, NewThreadInSessionRequest, ServiceResponse, SubscribeToThreadRequest,
     ThreadEvent,
 };
 use llmvm_util::{config::load_config, generate_client_id};
@@ -54,15 +54,15 @@ struct Cli {
     #[arg(short = 't', long)]
     load_thread_id: Option<String>,
 
-    /// Tag within a thread group to use.
+    /// Tag within a session to use.
     /// This switch takes precedence over --load_thread_id
     #[arg(long)]
     tag: Option<String>,
 
-    /// ID of the thread group to use.
+    /// ID of the session to use.
     /// If a tag is provided, then this will default to the current directory path.
     #[arg(long)]
-    thread_group_id: Option<String>,
+    session_id: Option<String>,
 
     /// Enable vi mode
     #[arg(long)]
@@ -136,8 +136,8 @@ impl ChatApp {
     async fn new() -> Result<Self> {
         let mut cli = Cli::parse();
 
-        if cli.thread_group_id.is_none() && cli.tag.is_some() {
-            cli.thread_group_id = Some(
+        if cli.session_id.is_none() && cli.tag.is_some() {
+            cli.session_id = Some(
                 std::env::current_dir()?
                     .canonicalize()?
                     .to_string_lossy()
@@ -221,8 +221,8 @@ impl ChatApp {
             .llmvm_core_service
             .call(CoreRequest::GetThreadMessages(GetThreadMessagesRequest {
                 thread_id: self.thread_id.clone(),
-                thread_group_id: self.cli.thread_group_id.clone(),
-                tag: self.cli.tag.clone(),
+                session_id: self.cli.session_id.clone(),
+                session_tag: self.cli.tag.clone(),
                 ..Default::default()
             }))
             .await
@@ -248,10 +248,10 @@ impl ChatApp {
             };
             let response = self
                 .llmvm_core_service
-                .call(CoreRequest::ListenOnThread(ListenOnThreadRequest {
+                .call(CoreRequest::SubscribeToThread(SubscribeToThreadRequest {
                     thread_id,
-                    thread_group_id: self.cli.thread_group_id.clone(),
-                    tag: self.cli.tag.clone(),
+                    session_id: self.cli.session_id.clone(),
+                    session_tag: self.cli.tag.clone(),
                     client_id: self.client_id.clone(),
                     ..Default::default()
                 }))
@@ -265,10 +265,7 @@ impl ChatApp {
                     while let Some(result) = stream.next().await {
                         if let Ok(response) = result {
                             if let CoreResponse::ListenOnThread(event) = response {
-                                if event.is_none() {
-                                    continue;
-                                }
-                                match event.unwrap() {
+                                match event {
                                     ThreadEvent::Message { message } => {
                                         let prefix = get_output_prefix(
                                             message.role,
@@ -280,6 +277,7 @@ impl ChatApp {
                                     ThreadEvent::NewThread { thread_id } => {
                                         println!("\r\nNew thread started in group: {thread_id}\n");
                                     }
+                                    _ => (),
                                 }
                                 print!(
                                     "\r{}",
@@ -308,12 +306,12 @@ impl ChatApp {
     async fn handle_console_input(&mut self, trimmed_input: &str) -> Result<()> {
         match trimmed_input {
             "new_group_thread" => {
-                if self.cli.thread_group_id.is_none() || self.cli.tag.is_none() {
+                if self.cli.session_id.is_none() || self.cli.tag.is_none() {
                     return Ok(());
                 }
                 self.llmvm_core_service
-                    .call(CoreRequest::NewThreadInGroup(NewThreadInGroupRequest {
-                        thread_group_id: self.cli.thread_group_id.clone().unwrap(),
+                    .call(CoreRequest::NewThreadInSession(NewThreadInSessionRequest {
+                        session_id: self.cli.session_id.clone().unwrap(),
                         tag: self.cli.tag.clone().unwrap(),
                     }))
                     .await
@@ -357,8 +355,8 @@ impl ChatApp {
                 }),
                 custom_prompt: Some(trimmed_input),
                 existing_thread_id: thread_id,
-                thread_group_id: self.cli.thread_group_id.clone(),
-                thread_group_tag: self.cli.tag.clone(),
+                session_id: self.cli.session_id.clone(),
+                session_tag: self.cli.tag.clone(),
                 save_thread: true,
                 client_id: Some(self.client_id.clone()),
                 ..Default::default()
