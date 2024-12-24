@@ -2,7 +2,7 @@ use llmvm_protocol::{ToolCall, ToolType};
 use serde_json::{Map, Value};
 
 use crate::error::CoreError;
-use crate::threads::SessionSubscriberInfo;
+use crate::sessions::SessionSubscriberInfo;
 use crate::Result;
 
 const TEXT_TOOL_CALL_HEADER: &str = "$$llmvm_tool$$ ";

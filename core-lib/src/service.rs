@@ -5,19 +5,19 @@ use futures::StreamExt;
 use llmvm_protocol::{
     error::ProtocolErrorType, service::BackendResponse, Core, GenerationRequest,
     GenerationResponse, GetThreadMessagesRequest, Message, NewThreadInSessionRequest,
-    NotificationStream, ProtocolError, SubscribeToThreadRequest, ThreadEvent, ThreadInfo,
+    NotificationStream, ProtocolError, StoreSessionPromptParameterRequest,
+    SubscribeToThreadRequest, ThreadEvent, ThreadInfo,
 };
 use llmvm_util::{get_file_path, DirType};
 use tracing::debug;
 
 use crate::{
     error::CoreError,
-    threads::{
-        get_session_subscribers, get_thread_infos, get_thread_messages,
-        maybe_save_thread_messages_and_get_thread_id, start_new_thread_in_session,
-        subscribe_to_thread,
+    generation::{finish_generation, prepare_for_generate},
+    sessions::{
+        get_session_subscribers, start_new_thread_in_session, store_session_prompt_parameter,
     },
-    tools::extract_text_tool_calls,
+    threads::{get_thread_infos, get_thread_messages, subscribe_to_thread},
     LLMVMCore, PROJECT_DIR_NAME,
 };
 
@@ -28,34 +28,15 @@ impl Core for LLMVMCore {
         request: GenerationRequest,
     ) -> std::result::Result<GenerationResponse, ProtocolError> {
         async {
-            let preparation = self.prepare_for_generate(&request).await?;
+            let (backend_request, preparation) = prepare_for_generate(&request).await?;
 
             let response = self
-                .send_generate_request(preparation.backend_request, &preparation.model_description)
+                .send_generate_request(backend_request, &preparation.model_description)
                 .await?;
 
             debug!("Response: {}", response.response);
 
-            let thread_id = maybe_save_thread_messages_and_get_thread_id(
-                &request,
-                response.response.clone(),
-                preparation.thread_messages_to_save,
-                preparation.existing_thread_id,
-            )
-            .await?;
-
-            let mut tool_calls = Vec::new();
-            if let Some(subscriber_infos) = preparation.subscriber_infos {
-                if preparation.text_tools_used {
-                    tool_calls = extract_text_tool_calls(&subscriber_infos, &response.response)?;
-                }
-            }
-
-            Ok(GenerationResponse {
-                response: response.response,
-                thread_id,
-                tool_calls,
-            })
+            finish_generation(&request, response.response, preparation, false).await
         }
         .await
         .map_err(|e: CoreError| e.into())
@@ -66,10 +47,10 @@ impl Core for LLMVMCore {
         request: GenerationRequest,
     ) -> std::result::Result<NotificationStream<GenerationResponse>, ProtocolError> {
         async {
-            let preparation = self.prepare_for_generate(&request).await?;
+            let (backend_request, preparation) = prepare_for_generate(&request).await?;
 
             let mut stream = self
-                .send_generate_request_for_stream(preparation.backend_request, &preparation.model_description)
+                .send_generate_request_for_stream(backend_request, &preparation.model_description)
                 .await?;
 
             Ok(stream! {
@@ -92,16 +73,9 @@ impl Core for LLMVMCore {
                         }
                     }
                 }
-                let mut tool_calls = Vec::new();
-                if let Some(subscriber_infos) = preparation.subscriber_infos {
-                    if preparation.text_tools_used {
-                        tool_calls = extract_text_tool_calls(&subscriber_infos, &full_response)?;
-                    }
-                }
-                if let Ok(thread_id) = maybe_save_thread_messages_and_get_thread_id(&request, full_response, preparation.thread_messages_to_save, preparation.existing_thread_id).await {
-                    yield Ok(GenerationResponse { response: String::new(), thread_id, tool_calls });
-                }
-            }.boxed())
+                yield finish_generation(&request, full_response, preparation, true).await.map_err(|e| e.into());
+            }
+            .boxed())
         }
         .await
         .map_err(|e: CoreError| e.into())
@@ -178,5 +152,19 @@ impl Core for LLMVMCore {
         start_new_thread_in_session(&request.session_id, &request.tag)
             .await
             .map_err(|e| e.into())
+    }
+
+    async fn store_session_prompt_parameter(
+        &self,
+        request: StoreSessionPromptParameterRequest,
+    ) -> Result<(), ProtocolError> {
+        store_session_prompt_parameter(
+            &request.session_id,
+            &request.session_tag,
+            request.name,
+            request.parameter,
+        )
+        .await
+        .map_err(|e| e.into())
     }
 }

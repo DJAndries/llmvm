@@ -116,6 +116,12 @@ pub trait Core: Send + Sync {
         &self,
         request: NewThreadInSessionRequest,
     ) -> Result<String, ProtocolError>;
+
+    /// Stores a prompt parameter for a given session for future requests
+    async fn store_session_prompt_parameter(
+        &self,
+        request: StoreSessionPromptParameterRequest,
+    ) -> Result<(), ProtocolError>;
 }
 
 /// Request for language model generation.
@@ -207,6 +213,28 @@ pub struct ToolCall {
     pub client_id: String,
     /// Arguments of the function
     pub arguments: Value,
+}
+
+/// A prompt parameter to store with a session
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionPromptParameter {
+    /// Value of the parameter
+    pub value: String,
+    /// If true, the prompt parameter will be included in all future requests
+    pub persistent: bool,
+}
+
+/// Request to store a prompt parameter for a given session for future requests
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoreSessionPromptParameterRequest {
+    /// Name of the parameter
+    pub name: String,
+    /// ID of the session
+    pub session_id: String,
+    /// Tag within the session
+    pub session_tag: String,
+    /// Details of the parameter
+    pub parameter: SessionPromptParameter,
 }
 
 /// A parsed model id data structure.

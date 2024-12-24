@@ -24,6 +24,7 @@ const GET_THREAD_MESSAGES_METHOD_PREFIX: &str = "/threads/";
 const SESSIONS_PREFIX: &str = "/sessions/";
 const GET_ALL_THREAD_INFOS_METHOD: &str = "/threads";
 const LISTEN_THREAD_PATH: &str = "/listen_thread";
+const SESSION_PROMPT_PARAMETER_PATH: &str = "/session_prompt_parameter";
 
 fn percent_encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
@@ -60,6 +61,10 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
             LISTEN_THREAD_PATH => {
                 validate_method(&request, Method::POST)?;
                 CoreRequest::SubscribeToThread(parse_request(request).await?)
+            }
+            SESSION_PROMPT_PARAMETER_PATH => {
+                validate_method(&request, Method::POST)?;
+                CoreRequest::StoreSessionPromptParameter(parse_request(request).await?)
             }
             _ => {
                 if path.starts_with(GET_THREAD_MESSAGES_METHOD_PREFIX)
@@ -156,6 +161,12 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
             CoreRequest::SubscribeToThread(request) => {
                 serialize_to_http_request(base_url, LISTEN_THREAD_PATH, Method::POST, &request)?
             }
+            CoreRequest::StoreSessionPromptParameter(request) => serialize_to_http_request(
+                base_url,
+                SESSION_PROMPT_PARAMETER_PATH,
+                Method::POST,
+                &request,
+            )?,
             _ => return Ok(None),
         };
         Ok(Some(request))
@@ -191,6 +202,9 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                 CoreRequest::SubscribeToThread(_) => ServiceResponse::Multiple(
                     notification_sse_stream(original_request.clone(), response),
                 ),
+                CoreRequest::StoreSessionPromptParameter(_) => {
+                    ServiceResponse::Single(CoreResponse::StoreSessionPromptParameter)
+                }
                 _ => return Ok(None),
             },
             ModalHttpResponse::Event(event) => ServiceResponse::Single(match original_request {
@@ -231,6 +245,9 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                 CoreResponse::ListenOnThread(response) => {
                     ModalHttpResponse::Event(serde_json::to_value(response).unwrap())
                 }
+                CoreResponse::StoreSessionPromptParameter => ModalHttpResponse::Single(
+                    serialize_to_http_response(&Value::Null, StatusCode::OK)?,
+                ),
                 _ => return Ok(None),
             },
             ServiceResponse::Multiple(stream) => {

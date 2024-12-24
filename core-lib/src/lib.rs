@@ -12,6 +12,7 @@ pub mod generation;
 pub mod presets;
 pub mod prompts;
 pub mod service;
+mod sessions;
 mod threads;
 mod tools;
 

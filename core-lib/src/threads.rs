@@ -1,55 +1,30 @@
 use std::{
     path::{Path, PathBuf},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use llmvm_protocol::{
     GenerationRequest, GetThreadMessagesRequest, Message, MessageRole, SubscribeToThreadRequest,
-    ThreadEvent, ThreadInfo, Tool,
+    ThreadEvent, ThreadInfo,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use notify::{RecommendedWatcher, Watcher};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
-use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::{fs, sync::mpsc, task::JoinHandle, time::sleep};
 
-use crate::{error::CoreError, Result};
+use crate::{
+    error::CoreError,
+    sessions::{
+        create_and_get_session_path, get_session_info, get_session_info_sync,
+        start_new_thread_in_session, SessionSubscriberInfo, SESSION_INFO_FILENAME,
+    },
+    Result,
+};
 
 fn thread_path(id: &str) -> Result<PathBuf> {
     get_file_path(DirType::Threads, &format!("{}.json", id), true)
         .ok_or(CoreError::UserHomeNotFound)
-}
-
-pub(super) const SESSION_INFO_FILENAME: &str = "info.json";
-const MAX_SUB_AGE_SECS: u64 = 30;
-
-async fn create_and_get_session_path(id: &str, tag: &str) -> Result<PathBuf> {
-    let path = session_path(id, tag)?;
-    fs::create_dir_all(&path).await?;
-    Ok(path)
-}
-
-fn session_path(id: &str, tag: &str) -> Result<PathBuf> {
-    get_file_path(
-        DirType::Sessions,
-        &url::form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>(),
-        true,
-    )
-    .map(|p| p.join(tag))
-    .ok_or(CoreError::UserHomeNotFound)
-}
-
-#[derive(Serialize, Deserialize)]
-struct SessionInfo {
-    thread_id: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub(super) struct SessionSubscriberInfo {
-    #[serde(skip)]
-    pub client_id: String,
-    pub tools: Option<Vec<Tool>>,
 }
 
 async fn clean_old_threads_in_dir(directory: &Path, ttl_secs: u64) -> Result<()> {
@@ -129,7 +104,7 @@ pub(super) async fn get_thread_infos() -> Result<Vec<ThreadInfo>> {
     Ok(Vec::new())
 }
 
-fn new_thread_id() -> String {
+pub(super) fn new_thread_id() -> String {
     let random_part: String = thread_rng()
         .sample_iter(&Alphanumeric)
         .take(8)
@@ -149,7 +124,7 @@ fn new_thread_id() -> String {
     )
 }
 
-async fn save_thread(thread_id: &str, messages: Vec<Message>) -> Result<()> {
+pub(super) async fn save_thread(thread_id: &str, messages: Vec<Message>) -> Result<()> {
     let thread_path = thread_path(thread_id)?;
 
     fs::write(thread_path, serde_json::to_vec(&messages)?).await?;
@@ -227,41 +202,6 @@ fn get_thread_messages_sync(request: &GetThreadMessagesRequest) -> Result<Vec<Me
         true => serde_json::from_slice(&std::fs::read(&thread_path)?)?,
         false => Vec::new(),
     })
-}
-
-pub(super) async fn start_new_thread_in_session(session_id: &str, tag: &str) -> Result<String> {
-    let path = create_and_get_session_path(&session_id, &tag)
-        .await?
-        .join(SESSION_INFO_FILENAME);
-
-    let thread_id = new_thread_id();
-    save_thread(&thread_id, Vec::new()).await?;
-    let info = SessionInfo {
-        thread_id: thread_id.clone(),
-    };
-
-    fs::write(path, serde_json::to_vec(&info)?).await?;
-    Ok(thread_id)
-}
-
-fn get_session_info_sync(session_id: &str, tag: &str) -> Result<SessionInfo> {
-    let path = session_path(session_id, tag)?.join(SESSION_INFO_FILENAME);
-    let info: SessionInfo = match path.exists() {
-        true => serde_json::from_slice(&std::fs::read(&path)?)?,
-        false => return Err(CoreError::ThreadNotFound),
-    };
-    Ok(info)
-}
-
-async fn get_session_info(session_id: &str, tag: &str) -> Result<SessionInfo> {
-    let path = create_and_get_session_path(session_id, tag)
-        .await?
-        .join(SESSION_INFO_FILENAME);
-    let info: SessionInfo = match fs::try_exists(&path).await.unwrap_or_default() {
-        true => serde_json::from_slice(&fs::read(&path).await?)?,
-        false => return Err(CoreError::ThreadNotFound),
-    };
-    Ok(info)
 }
 
 pub struct SubscriptionHandle {
@@ -405,41 +345,4 @@ pub(super) async fn subscribe_to_thread(
     }
 
     Ok((rx, SubscriptionHandle::new(watcher, subscriber_file)?))
-}
-
-pub(super) async fn get_session_subscribers(
-    session_id: &str,
-    tag: &str,
-) -> Result<Vec<SessionSubscriberInfo>> {
-    let session_path = create_and_get_session_path(session_id, tag).await?;
-    let mut subscribers = Vec::new();
-    let now = SystemTime::now();
-
-    let mut entries = fs::read_dir(&session_path).await?;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let filename = entry.file_name();
-        let filename = filename.to_string_lossy();
-
-        if !filename.ends_with(".json") || filename == SESSION_INFO_FILENAME {
-            continue;
-        }
-
-        if let Some(client_id) = filename.strip_suffix(".json") {
-            let age = now
-                .duration_since(entry.metadata().await?.modified()?)
-                .unwrap();
-            // Subscribers will actively update their last modified time periodically
-            // If the subscriber file has not been updated in a while, then ignore them and assume they're no longer active
-            if age.as_secs() >= MAX_SUB_AGE_SECS {
-                fs::remove_file(entry.path()).await?;
-                continue;
-            }
-            let mut info =
-                serde_json::from_slice::<SessionSubscriberInfo>(&fs::read(entry.path()).await?)?;
-            info.client_id = client_id.to_string();
-            subscribers.push(info);
-        }
-    }
-
-    Ok(subscribers)
 }

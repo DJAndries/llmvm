@@ -13,7 +13,7 @@ pub use multilink::{BoxedService, ServiceError, ServiceFuture};
 use crate::{
     Backend, BackendGenerationRequest, BackendGenerationResponse, Core, GenerationRequest,
     GenerationResponse, GetThreadMessagesRequest, Message, NewThreadInSessionRequest,
-    SubscribeToThreadRequest, ThreadEvent, ThreadInfo,
+    StoreSessionPromptParameterRequest, SubscribeToThreadRequest, ThreadEvent, ThreadInfo,
 };
 
 /// Enum containing all types of backend requests.
@@ -41,6 +41,7 @@ pub enum CoreRequest {
     InitProject,
     SubscribeToThread(SubscribeToThreadRequest),
     NewThreadInSession(NewThreadInSessionRequest),
+    StoreSessionPromptParameter(StoreSessionPromptParameterRequest),
 }
 
 /// Enum containing all types of core responses.
@@ -54,6 +55,7 @@ pub enum CoreResponse {
     InitProject,
     ListenOnThread(ThreadEvent),
     NewThreadInSession(ThreadInfo),
+    StoreSessionPromptParameter,
 }
 
 /// Service that receives [`BackendRequest`] values,
@@ -204,6 +206,10 @@ where
                         }))
                     })
                 }
+                CoreRequest::StoreSessionPromptParameter(request) => core
+                    .store_session_prompt_parameter(request)
+                    .await
+                    .map(|_| ServiceResponse::Single(CoreResponse::StoreSessionPromptParameter)),
             }?)
         })
     }

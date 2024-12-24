@@ -4,8 +4,8 @@ use llmvm_protocol::service::{BackendRequest, BackendResponse};
 use llmvm_protocol::tower::Service;
 use llmvm_protocol::{
     BackendGenerationRequest, BackendGenerationResponse, GenerationParameters, GenerationRequest,
-    GetThreadMessagesRequest, Message, MessageRole, ModelDescription, NotificationStream,
-    ServiceResponse,
+    GenerationResponse, GetThreadMessagesRequest, Message, MessageRole, ModelDescription,
+    NotificationStream, ServiceResponse,
 };
 use serde_json::Value;
 
@@ -14,8 +14,14 @@ use tracing::{debug, info};
 use crate::error::CoreError;
 use crate::presets::load_preset;
 use crate::prompts::ReadyPrompt;
-use crate::threads::{get_session_subscribers, get_thread_messages, SessionSubscriberInfo};
-use crate::tools::{generate_text_tools_prompt, inject_client_id_into_tools};
+use crate::sessions::{
+    clean_non_persistent_prompt_parameters, get_session_prompt_parameters, get_session_subscribers,
+    SessionSubscriberInfo,
+};
+use crate::threads::{get_thread_messages, maybe_save_thread_messages_and_get_thread_id};
+use crate::tools::{
+    extract_text_tool_calls, generate_text_tools_prompt, inject_client_id_into_tools,
+};
 use crate::{LLMVMCore, Result};
 
 const TEXT_TOOLS_PARAM_NAME: &str = "text_tools";
@@ -54,12 +60,12 @@ fn merge_generation_parameters(
 }
 
 pub(super) struct GenerationPreparation {
-    pub backend_request: BackendGenerationRequest,
     pub model_description: ModelDescription,
     pub thread_messages_to_save: Option<Vec<Message>>,
     pub existing_thread_id: Option<String>,
     pub subscriber_infos: Option<Vec<SessionSubscriberInfo>>,
     pub text_tools_used: bool,
+    pub session_prompt_parameters_used: bool,
 }
 
 impl LLMVMCore {
@@ -105,151 +111,200 @@ impl LLMVMCore {
             _ => Err(CoreError::UnexpectedServiceResponse),
         }
     }
+}
 
-    pub(super) async fn prepare_for_generate(
-        &self,
-        request: &GenerationRequest,
-    ) -> Result<GenerationPreparation> {
-        let mut parameters = match &request.preset_id {
-            Some(preset_id) => {
-                let mut parameters = load_preset(&preset_id).await?;
-                if let Some(request_parameters) = request.parameters.clone() {
-                    parameters = merge_generation_parameters(parameters, request_parameters);
-                }
-                parameters
+pub(super) async fn prepare_for_generate(
+    request: &GenerationRequest,
+) -> Result<(BackendGenerationRequest, GenerationPreparation)> {
+    let mut parameters = match &request.preset_id {
+        Some(preset_id) => {
+            let mut parameters = load_preset(&preset_id).await?;
+            if let Some(request_parameters) = request.parameters.clone() {
+                parameters = merge_generation_parameters(parameters, request_parameters);
             }
-            None => request
-                .parameters
-                .clone()
-                .ok_or(CoreError::MissingParameters)?,
-        };
-        debug!("generation parameters: {:?}", parameters);
-
-        if parameters.max_tokens.is_none() {
-            parameters.max_tokens = Some(2048);
+            parameters
         }
+        None => request
+            .parameters
+            .clone()
+            .ok_or(CoreError::MissingParameters)?,
+    };
+    debug!("generation parameters: {:?}", parameters);
 
-        let model = parameters
-            .model
-            .ok_or(CoreError::MissingParameter("model"))?;
-        let model_description =
-            ModelDescription::from_str(&model).map_err(|_| CoreError::ModelDescriptionParse)?;
-        let is_chat_model = model_description.is_chat_model();
-        let mut prompt_parameters = parameters
-            .prompt_parameters
-            .unwrap_or(Value::Object(Default::default()));
+    if parameters.max_tokens.is_none() {
+        parameters.max_tokens = Some(2048);
+    }
 
-        let mut text_tools_used = false;
-        let subscriber_infos = match (&request.session_id, &request.session_tag) {
-            (Some(session_id), Some(session_tag)) => {
-                let mut subscribers = get_session_subscribers(&session_id, &session_tag).await?;
-                inject_client_id_into_tools(&mut subscribers);
+    let model = parameters
+        .model
+        .ok_or(CoreError::MissingParameter("model"))?;
+    let model_description =
+        ModelDescription::from_str(&model).map_err(|_| CoreError::ModelDescriptionParse)?;
+    let is_chat_model = model_description.is_chat_model();
+    let mut prompt_parameters = parameters
+        .prompt_parameters
+        .unwrap_or(Value::Object(Default::default()));
 
-                let tools_prompt = generate_text_tools_prompt(&subscribers);
-                if !tools_prompt.is_empty() {
-                    text_tools_used = true;
-                    prompt_parameters[TEXT_TOOLS_PARAM_NAME] = tools_prompt.into();
-                }
+    let mut text_tools_used = false;
+    let mut session_prompt_parameters_used = false;
+    // If using session, add frontend tools and prompt parameters
+    let subscriber_infos = match (&request.session_id, &request.session_tag) {
+        (Some(session_id), Some(session_tag)) => {
+            let mut subscribers = get_session_subscribers(&session_id, &session_tag).await?;
+            inject_client_id_into_tools(&mut subscribers);
 
-                Some(subscribers)
+            let tools_prompt = generate_text_tools_prompt(&subscribers);
+            if !tools_prompt.is_empty() {
+                text_tools_used = true;
+                prompt_parameters[TEXT_TOOLS_PARAM_NAME] = tools_prompt.into();
             }
-            _ => None,
-        };
 
-        let prompt = match parameters.custom_prompt_template {
-            Some(template) => {
-                ReadyPrompt::from_custom_template(&template, &prompt_parameters, is_chat_model)?
+            let session_prompt_parameters =
+                get_session_prompt_parameters(session_id, session_tag).await?;
+            if !session_prompt_parameters.is_empty() {
+                prompt_parameters
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(session_prompt_parameters);
+                session_prompt_parameters_used = true;
             }
-            None => match parameters.prompt_template_id {
-                Some(template_id) => {
-                    ReadyPrompt::from_stored_template(
-                        &template_id,
-                        &prompt_parameters,
-                        is_chat_model,
-                    )
+
+            Some(subscribers)
+        }
+        _ => None,
+    };
+
+    let prompt = match parameters.custom_prompt_template {
+        Some(template) => {
+            ReadyPrompt::from_custom_template(&template, &prompt_parameters, is_chat_model)?
+        }
+        None => match parameters.prompt_template_id {
+            Some(template_id) => {
+                ReadyPrompt::from_stored_template(&template_id, &prompt_parameters, is_chat_model)
                     .await?
-                }
-                None => ReadyPrompt::from_custom_prompt(
-                    request
-                        .custom_prompt
-                        .as_ref()
-                        .ok_or(CoreError::TemplateNotFound)?
-                        .clone(),
-                ),
-            },
-        };
-
-        let (mut thread_messages, existing_thread_id) =
-            match request.existing_thread_id.is_some() || request.session_id.is_some() {
-                true => {
-                    let (msgs, thread_id) = get_thread_messages(&GetThreadMessagesRequest {
-                        thread_id: request.existing_thread_id.clone(),
-                        session_id: request.session_id.clone(),
-                        session_tag: request.session_tag.clone(),
-                    })
-                    .await?;
-                    (Some(msgs), Some(thread_id))
-                }
-                false => (None, None),
-            };
-        if let Some(content) = prompt.system_prompt {
-            let messages = thread_messages.get_or_insert_with(|| Vec::with_capacity(1));
-            messages.retain(|message| {
-                if let MessageRole::System = message.role {
-                    false
-                } else {
-                    true
-                }
-            });
-            messages.insert(
-                0,
-                Message {
-                    client_id: request.client_id.clone(),
-                    role: MessageRole::System,
-                    content,
-                },
-            );
-        }
-
-        let thread_messages_to_save = match request.save_thread {
-            true => {
-                let mut clone = thread_messages.clone().unwrap_or_default();
-                clone.push(Message {
-                    client_id: request.client_id.clone(),
-                    role: MessageRole::User,
-                    content: prompt.main_prompt.clone(),
-                });
-                Some(clone)
             }
-            false => None,
+            None => ReadyPrompt::from_custom_prompt(
+                request
+                    .custom_prompt
+                    .as_ref()
+                    .ok_or(CoreError::TemplateNotFound)?
+                    .clone(),
+            ),
+        },
+    };
+
+    let (mut thread_messages, existing_thread_id) =
+        match request.existing_thread_id.is_some() || request.session_id.is_some() {
+            true => {
+                let (msgs, thread_id) = get_thread_messages(&GetThreadMessagesRequest {
+                    thread_id: request.existing_thread_id.clone(),
+                    session_id: request.session_id.clone(),
+                    session_tag: request.session_tag.clone(),
+                })
+                .await?;
+                (Some(msgs), Some(thread_id))
+            }
+            false => (None, None),
         };
-
-        let backend_request = BackendGenerationRequest {
-            model,
-            prompt: prompt.main_prompt,
-            max_tokens: parameters
-                .max_tokens
-                .ok_or(CoreError::MissingParameter("max_tokens"))?,
-            thread_messages,
-            model_parameters: parameters.model_parameters,
-        };
-
-        info!(
-            "Sending backend request with prompt: {}",
-            backend_request.prompt
+    if let Some(content) = prompt.system_prompt {
+        let messages = thread_messages.get_or_insert_with(|| Vec::with_capacity(1));
+        messages.retain(|message| {
+            if let MessageRole::System = message.role {
+                false
+            } else {
+                true
+            }
+        });
+        messages.insert(
+            0,
+            Message {
+                client_id: request.client_id.clone(),
+                role: MessageRole::System,
+                content,
+            },
         );
-        debug!(
-            "Thread messages for requests: {:#?}",
-            backend_request.thread_messages
-        );
+    }
 
-        Ok(GenerationPreparation {
-            backend_request,
+    let thread_messages_to_save = match request.save_thread {
+        true => {
+            let mut clone = thread_messages.clone().unwrap_or_default();
+            clone.push(Message {
+                client_id: request.client_id.clone(),
+                role: MessageRole::User,
+                content: prompt.main_prompt.clone(),
+            });
+            Some(clone)
+        }
+        false => None,
+    };
+
+    let backend_request = BackendGenerationRequest {
+        model,
+        prompt: prompt.main_prompt,
+        max_tokens: parameters
+            .max_tokens
+            .ok_or(CoreError::MissingParameter("max_tokens"))?,
+        thread_messages,
+        model_parameters: parameters.model_parameters,
+    };
+
+    info!(
+        "Sending backend request with prompt: {}",
+        backend_request.prompt
+    );
+    debug!(
+        "Thread messages for requests: {:#?}",
+        backend_request.thread_messages
+    );
+
+    Ok((
+        backend_request,
+        GenerationPreparation {
             model_description,
             thread_messages_to_save,
             existing_thread_id,
             subscriber_infos,
             text_tools_used,
-        })
+            session_prompt_parameters_used,
+        },
+    ))
+}
+
+pub(super) async fn finish_generation(
+    request: &GenerationRequest,
+    full_response: String,
+    preparation: GenerationPreparation,
+    streamed: bool,
+) -> Result<GenerationResponse> {
+    let mut tool_calls = Vec::new();
+    if let Some(subscriber_infos) = preparation.subscriber_infos {
+        if preparation.text_tools_used {
+            tool_calls = extract_text_tool_calls(&subscriber_infos, &full_response)?;
+        }
     }
+
+    let thread_id = maybe_save_thread_messages_and_get_thread_id(
+        &request,
+        full_response.clone(),
+        preparation.thread_messages_to_save,
+        preparation.existing_thread_id,
+    )
+    .await?;
+
+    if preparation.session_prompt_parameters_used {
+        clean_non_persistent_prompt_parameters(
+            request.session_id.as_ref().unwrap(),
+            request.session_tag.as_ref().unwrap(),
+        )
+        .await?;
+    }
+
+    Ok(GenerationResponse {
+        response: match streamed {
+            false => full_response,
+            true => String::new(),
+        },
+        thread_id,
+        tool_calls,
+    })
 }

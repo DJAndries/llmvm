@@ -17,6 +17,7 @@ const GET_ALL_THREAD_INFOS_METHOD: &str = "get_all_thread_infos";
 const GET_THREAD_MESSAGES_METHOD: &str = "get_thread_messages";
 const LISTEN_ON_THREAD_METHOD: &str = "listen_on_thread";
 const NEW_THREAD_IN_SESSION_METHOD: &str = "new_thread_in_session";
+const STORE_SESSION_PROMPT_PARAMETER_METHOD: &str = "store_session_prompt_parameter";
 
 impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
     fn from_jsonrpc_request(value: JsonRpcRequest) -> Result<Option<Self>, ProtocolError> {
@@ -58,6 +59,10 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
                 NEW_THREAD_IN_SESSION_METHOD,
                 Some(serde_json::to_value(request).unwrap()),
             ),
+            CoreRequest::StoreSessionPromptParameter(request) => (
+                STORE_SESSION_PROMPT_PARAMETER_METHOD,
+                Some(serde_json::to_value(request).unwrap()),
+            ),
         };
         JsonRpcRequest::new(method.to_string(), params)
     }
@@ -85,6 +90,9 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
                     CoreRequest::InitProject => Self::InitProject,
                     CoreRequest::NewThreadInSession(_) => {
                         Self::NewThreadInSession(parse_from_value(result)?)
+                    }
+                    CoreRequest::StoreSessionPromptParameter(_) => {
+                        Self::StoreSessionPromptParameter
                     }
                     _ => return Ok(None),
                 }))
@@ -122,6 +130,7 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
                 serde_json::to_value(response).unwrap()
             }
             CoreResponse::NewThreadInSession(response) => serde_json::to_value(response).unwrap(),
+            CoreResponse::StoreSessionPromptParameter => Value::Null,
         });
         match is_notification {
             true => JsonRpcNotification::new_with_result_params(result, id.to_string()).into(),
