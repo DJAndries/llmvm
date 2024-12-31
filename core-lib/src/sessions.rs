@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use llmvm_protocol::{SessionPromptParameter, Tool};
 use llmvm_util::{get_file_path, DirType};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::fs;
 
 use crate::error::CoreError;
@@ -128,21 +128,37 @@ pub(super) async fn store_session_prompt_parameter(
 pub(super) async fn get_session_prompt_parameters(
     session_id: &str,
     tag: &str,
-) -> Result<Vec<(String, Value)>> {
+) -> Result<Map<String, Value>> {
     let path = create_and_get_session_path(&session_id, &tag)
         .await?
         .join(SESSION_INFO_FILENAME);
 
     let bytes = fs::read(&path).await?;
     let info: SessionInfo = serde_json::from_slice(&bytes)?;
+    let mut param_map = Map::new();
 
-    let params = info
-        .prompt_parameters
-        .into_iter()
-        .map(|(key, param)| (key, param.value.into()))
-        .collect();
+    // Process each parameter
+    for (key, param) in info.prompt_parameters {
+        let parts: Vec<&str> = key.split('.').collect();
+        let mut current_map = &mut param_map;
 
-    Ok(params)
+        // Handle nested paths
+        for (i, part) in parts.iter().enumerate() {
+            if i == parts.len() - 1 {
+                // Last part - insert the actual value
+                current_map.insert(part.to_string(), param.value.clone());
+            } else {
+                // Create or get nested map
+                current_map = current_map
+                    .entry(part.to_string())
+                    .or_insert_with(|| Value::Object(Map::new()))
+                    .as_object_mut()
+                    .unwrap();
+            }
+        }
+    }
+
+    Ok(param_map)
 }
 
 pub(super) async fn clean_non_persistent_prompt_parameters(

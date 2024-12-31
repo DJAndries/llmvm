@@ -1,8 +1,8 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use llmvm_protocol::{
     jsonrpc::JsonRpcMessage,
     service::{CoreRequest, CoreResponse},
-    BoxedService,
+    BoxedService, SessionPromptParameter, StoreSessionPromptParameterRequest,
 };
 use lsp_types::{
     notification::{
@@ -10,34 +10,48 @@ use lsp_types::{
     },
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Range, Url,
 };
-use std::{cmp::min, collections::HashMap, sync::Arc};
+use serde::Serialize;
+use std::{cmp::min, collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, BufReader},
-    sync::Mutex,
+    sync::{mpsc, Mutex},
+    time::sleep,
 };
 use tokio_stream::{wrappers::LinesStream, StreamExt};
-use tracing::trace;
+use tracing::{error, trace};
 
-use crate::lsp::LspMessage;
+use crate::{lsp::LspMessage, session::ALL_SESSION_TAGS};
 
 const UNKNOWN_LANG_ID: &str = "unknown";
 
 struct DocumentInfo {
     lines: Vec<String>,
     lang_id: String,
+    file_context_update_notifier: Option<mpsc::UnboundedSender<()>>,
+}
+
+#[derive(Serialize)]
+struct FileContext {
+    content: String,
+    file_path: String,
 }
 
 pub struct ContentManager {
     content_map: HashMap<Url, DocumentInfo>,
     llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
+    session_id: String,
 }
 
 impl ContentManager {
-    pub fn new(llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>) -> Self {
+    pub fn new(
+        llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
+        session_id: String,
+    ) -> Self {
         Self {
             content_map: HashMap::new(),
             llmvm_core_service,
+            session_id,
         }
     }
 
@@ -144,6 +158,8 @@ impl ContentManager {
                 "patch applied, updated doc: {:#?}",
                 stored_lines
             );
+
+            self.notify_file_context_update(uri);
         }
 
         Ok(())
@@ -166,6 +182,7 @@ impl ContentManager {
                 if let Some(lang_id) = lang_id {
                     doc_info.lang_id = lang_id;
                 }
+                self.notify_file_context_update(uri);
             }
             None => {
                 self.content_map.insert(
@@ -173,11 +190,105 @@ impl ContentManager {
                     DocumentInfo {
                         lines,
                         lang_id: lang_id.unwrap_or_else(|| UNKNOWN_LANG_ID.to_string()),
+                        file_context_update_notifier: None,
                     },
                 );
             }
         };
         Ok(())
+    }
+
+    pub fn is_file_context_enabled(&self, uri: &Url) -> bool {
+        self.content_map.get(uri).map_or(false, |doc_info| {
+            doc_info.file_context_update_notifier.is_some()
+        })
+    }
+
+    pub fn toggle_file_context(&mut self, content_manager_arc: &Arc<Mutex<Self>>, uri: &Url) {
+        if let Some(doc_info) = self.content_map.get_mut(uri) {
+            if doc_info.file_context_update_notifier.is_some() {
+                doc_info.file_context_update_notifier = None;
+                return;
+            }
+            let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+            doc_info.file_context_update_notifier = Some(tx);
+
+            let uri = uri.clone();
+            let content_manager = content_manager_arc.clone();
+
+            tokio::spawn(async move {
+                let mut storage_pending = false;
+                loop {
+                    tokio::select! {
+                        _ = sleep(Duration::from_secs(5)) => {
+                            if !storage_pending {
+                                continue;
+                            }
+                            if let Err(e) = content_manager
+                                .lock()
+                                .await
+                                .store_file_context_session_parameter(&uri)
+                                .await {
+                                error!("failed to store session prompt parameter: {e}");
+                            }
+                        }
+                        result = rx.recv() => {
+                            match result {
+                                None => break,
+                                Some(()) => storage_pending = true
+                            };
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    async fn store_file_context_session_parameter(&self, uri: &Url) -> Result<()> {
+        if let Some(doc_info) = self.content_map.get(uri) {
+            let file_path = uri.path().to_string();
+            let param_key = format!("codeassist_file_content.{}", file_path.replace(".", "_"));
+
+            let content = doc_info
+                .lines
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("{}: {}", i + 1, v))
+                .collect::<Vec<String>>()
+                .join("\n");
+
+            for tag in ALL_SESSION_TAGS {
+                self.llmvm_core_service
+                    .lock()
+                    .await
+                    .call(CoreRequest::StoreSessionPromptParameter(
+                        StoreSessionPromptParameterRequest {
+                            key: param_key.clone(),
+                            session_id: self.session_id.clone(),
+                            session_tag: tag.to_string(),
+                            parameter: SessionPromptParameter {
+                                persistent: true,
+                                value: serde_json::to_value(FileContext {
+                                    content: content.clone(),
+                                    file_path: file_path.clone(),
+                                })
+                                .unwrap(),
+                            },
+                        },
+                    ))
+                    .await
+                    .map_err(|e| anyhow!(e))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn notify_file_context_update(&self, uri: &Url) {
+        if let Some(doc_info) = self.content_map.get(uri) {
+            if let Some(sender) = &doc_info.file_context_update_notifier {
+                let _ = sender.send(());
+            }
+        }
     }
 
     pub fn handle_doc_sync_notification(&mut self, message: &LspMessage) -> Result<()> {

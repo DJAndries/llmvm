@@ -222,7 +222,7 @@ pub struct ToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionPromptParameter {
     /// Value of the parameter
-    pub value: String,
+    pub value: Value,
     /// If true, the prompt parameter will be included in all future requests
     pub persistent: bool,
 }
@@ -230,8 +230,8 @@ pub struct SessionPromptParameter {
 /// Request to store a prompt parameter for a given session for future requests
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreSessionPromptParameterRequest {
-    /// Name of the parameter
-    pub name: String,
+    /// Key of the parameter
+    pub key: String,
     /// ID of the session
     pub session_id: String,
     /// Tag within the session

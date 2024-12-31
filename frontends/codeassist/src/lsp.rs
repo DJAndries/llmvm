@@ -17,6 +17,7 @@ pub const CODE_ASSIST_COMMAND_PREFIX: &str = "llmvm-codeassist/";
 pub const CODE_COMPLETE_COMMAND_ID: &str = "llmvm-codeassist/complete";
 pub const MANUAL_CONTEXT_ADD_COMMAND_ID: &str = "llmvm-codeassist/addContext";
 pub const NEW_CHAT_THREAD_COMMAND_ID: &str = "llmvm-codeassist/newChatThread";
+pub const TOGGLE_FILE_CONTEXT_COMMAND_ID: &str = "llmvm-codeassist/toggleFileContext";
 
 #[derive(Clone, Debug)]
 pub struct LspMessage {

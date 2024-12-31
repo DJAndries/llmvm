@@ -153,10 +153,13 @@ async fn main() -> Result<()> {
 
     let enable_tools = config.enable_tools;
 
+    let session_id = std::env::current_dir()?.to_string_lossy().into_owned();
+
     let mut adapter = LspAdapter::new(
         Arc::new(config),
         passthrough_service.clone(),
         llmvm_core_service.clone(),
+        session_id.clone(),
     );
 
     passthrough.set_adapter_service(adapter.get_service());
@@ -165,7 +168,7 @@ async fn main() -> Result<()> {
 
     if enable_tools {
         let session_subscription =
-            SessionSubscription::new(llmvm_core_service, passthrough_service);
+            SessionSubscription::new(llmvm_core_service, passthrough_service, session_id);
         tokio::spawn(async move {
             if let Err(e) = session_subscription.run().await {
                 error!("failed to subscribe to session, tools disabled: {e}");

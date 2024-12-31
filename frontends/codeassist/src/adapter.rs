@@ -19,7 +19,7 @@ use crate::{
     content::ContentManager,
     lsp::{
         LspMessage, CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID,
-        NEW_CHAT_THREAD_COMMAND_ID,
+        NEW_CHAT_THREAD_COMMAND_ID, TOGGLE_FILE_CONTEXT_COMMAND_ID,
     },
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
     CodeAssistConfig,
@@ -51,6 +51,7 @@ impl LspAdapter {
         config: Arc<CodeAssistConfig>,
         passthrough_service: LspMessageService,
         llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
+        session_id: String,
     ) -> Self {
         let (service_tx, service_rx) = mpsc::unbounded_channel();
         Self {
@@ -63,7 +64,10 @@ impl LspAdapter {
             current_thread_id: Default::default(),
             root_uri: None,
             complete_task_last_id: 0,
-            content_manager: Arc::new(Mutex::new(ContentManager::new(llmvm_core_service))),
+            content_manager: Arc::new(Mutex::new(ContentManager::new(
+                llmvm_core_service,
+                session_id,
+            ))),
             queued_random_context_locations: Default::default(),
         }
     }
@@ -100,7 +104,7 @@ impl LspAdapter {
         Ok(Some(message))
     }
 
-    fn transform_code_action_response(
+    async fn transform_code_action_response(
         &self,
         origin_request: &JsonRpcRequest,
         message: &LspMessage,
@@ -116,8 +120,9 @@ impl LspAdapter {
             true => Vec::new(),
             false => serde_json::from_value::<CodeActionResponse>(result_value)?,
         };
+        let uri = request_params.text_document.uri.clone();
         let location_args = Some(vec![serde_json::to_value(Location::new(
-            request_params.text_document.uri.clone(),
+            uri.clone(),
             request_params.range,
         ))?]);
         if self.config.use_chat_threads {
@@ -127,8 +132,26 @@ impl LspAdapter {
                 arguments: Some(Vec::new()),
             }));
         }
+        if self.config.enable_tools {
+            let title = if !self
+                .content_manager
+                .lock()
+                .await
+                .is_file_context_enabled(&uri)
+            {
+                "Include entire file as context"
+            } else {
+                "Remove entire file from context"
+            }
+            .to_string();
+            result.push(CodeActionOrCommand::Command(Command {
+                title,
+                command: TOGGLE_FILE_CONTEXT_COMMAND_ID.to_string(),
+                arguments: Some(vec![serde_json::to_value(uri).unwrap()]),
+            }));
+        }
         result.push(CodeActionOrCommand::Command(Command {
-            title: "Add context to LLM code complete".to_string(),
+            title: "Add context for code completion".to_string(),
             command: MANUAL_CONTEXT_ADD_COMMAND_ID.to_string(),
             arguments: location_args.clone(),
         }));
@@ -146,6 +169,20 @@ impl LspAdapter {
         Ok(serde_json::from_value(params.arguments.pop().ok_or(
             anyhow!("code complete params must be specified with request"),
         )?)?)
+    }
+
+    async fn handle_toggle_file_context_command(
+        &self,
+        mut params: ExecuteCommandParams,
+    ) -> Result<()> {
+        let uri: Url = serde_json::from_value(params.arguments.pop().ok_or(anyhow!(
+            "file uri must be included in toggle file context command"
+        ))?)?;
+        Ok(self
+            .content_manager
+            .lock()
+            .await
+            .toggle_file_context(&self.content_manager, &uri))
     }
 
     fn handle_code_complete_command(&mut self, mut params: ExecuteCommandParams) -> Result<()> {
@@ -209,6 +246,7 @@ impl LspAdapter {
             Some(origin_request) => match origin_request.method.as_str() {
                 CodeActionRequest::METHOD => {
                     self.transform_code_action_response(&origin_request, &msg_info.message)
+                        .await
                 }
                 Initialize::METHOD => self.transform_initialize_response(&msg_info.message),
                 _ => Ok(None),
@@ -228,6 +266,9 @@ impl LspAdapter {
                                     NEW_CHAT_THREAD_COMMAND_ID => {
                                         *self.current_thread_id.lock().await = None;
                                         Ok(())
+                                    }
+                                    TOGGLE_FILE_CONTEXT_COMMAND_ID => {
+                                        self.handle_toggle_file_context_command(params).await
                                     }
                                     _ => Ok(()),
                                 },
