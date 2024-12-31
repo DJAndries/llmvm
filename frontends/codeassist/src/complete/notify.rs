@@ -26,7 +26,7 @@ impl CodeCompleteTask {
             .map_err(|e| anyhow!(e))?;
         result
             .ok_or(anyhow!("missing response for progress token creation"))?
-            .get_result()?;
+            .get_result::<()>()?;
         Ok(token)
     }
 

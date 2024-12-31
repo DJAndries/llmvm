@@ -221,6 +221,7 @@ pub(super) async fn prepare_for_generate(
                 client_id: request.client_id.clone(),
                 role: MessageRole::System,
                 content,
+                tool_calls: None,
             },
         );
     }
@@ -232,6 +233,7 @@ pub(super) async fn prepare_for_generate(
                 client_id: request.client_id.clone(),
                 role: MessageRole::User,
                 content: prompt.main_prompt.clone(),
+                tool_calls: None,
             });
             Some(clone)
         }
@@ -286,6 +288,7 @@ pub(super) async fn finish_generation(
     let thread_id = maybe_save_thread_messages_and_get_thread_id(
         &request,
         full_response.clone(),
+        tool_calls.clone(),
         preparation.thread_messages_to_save,
         preparation.existing_thread_id,
     )

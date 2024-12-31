@@ -28,7 +28,7 @@ pub struct LspStdioPassthrough {
     real_server_stdout: Pin<Box<dyn AsyncBufRead>>,
 
     service_rx: mpsc::UnboundedReceiver<LspMessageTrx>,
-    service_tx: Option<mpsc::UnboundedSender<LspMessageTrx>>,
+    service_tx: mpsc::UnboundedSender<LspMessageTrx>,
 
     interceptor: Option<LspInterceptor>,
 
@@ -49,18 +49,14 @@ impl LspStdioPassthrough {
             real_server_stdin: Box::pin(real_server_stdin),
             real_server_stdout: Box::pin(BufReader::new(real_server_stdout)),
             service_rx,
-            service_tx: Some(service_tx),
+            service_tx,
             interceptor: None,
             new_request_last_id: 0,
         }
     }
 
     pub fn get_service(&mut self) -> LspMessageService {
-        LspMessageService::new(
-            self.service_tx
-                .take()
-                .expect("service tx should be available"),
-        )
+        LspMessageService::new(self.service_tx.clone())
     }
 
     pub fn set_adapter_service(&mut self, service: LspMessageService) {

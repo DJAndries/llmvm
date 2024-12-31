@@ -53,6 +53,9 @@ pub struct Message {
     pub role: MessageRole,
     /// Text content of the message.
     pub content: String,
+    /// Tool calls made by the model
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 /// The backend service which the core uses to generate text.

@@ -5,7 +5,7 @@ use std::{
 
 use llmvm_protocol::{
     GenerationRequest, GetThreadMessagesRequest, Message, MessageRole, SubscribeToThreadRequest,
-    ThreadEvent, ThreadInfo,
+    ThreadEvent, ThreadInfo, ToolCall,
 };
 use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use notify::{RecommendedWatcher, Watcher};
@@ -134,6 +134,7 @@ pub(super) async fn save_thread(thread_id: &str, messages: Vec<Message>) -> Resu
 pub(super) async fn maybe_save_thread_messages_and_get_thread_id(
     request: &GenerationRequest,
     new_text: String,
+    tool_calls: Vec<ToolCall>,
     messages: Option<Vec<Message>>,
     existing_thread_id: Option<String>,
 ) -> Result<Option<String>> {
@@ -143,6 +144,7 @@ pub(super) async fn maybe_save_thread_messages_and_get_thread_id(
                 client_id: request.client_id.clone(),
                 role: MessageRole::Assistant,
                 content: new_text,
+                tool_calls: Some(tool_calls),
             });
             let thread_id = existing_thread_id.unwrap_or_else(new_thread_id);
             save_thread(&thread_id, messages).await?;

@@ -137,12 +137,7 @@ impl ChatApp {
         let mut cli = Cli::parse();
 
         if cli.session_id.is_none() && cli.tag.is_some() {
-            cli.session_id = Some(
-                std::env::current_dir()?
-                    .canonicalize()?
-                    .to_string_lossy()
-                    .into_owned(),
-            );
+            cli.session_id = Some(std::env::current_dir()?.to_string_lossy().into_owned());
         }
 
         let mut config = load_config::<ChatConfig>(CONFIG_FILENAME).unwrap_or_else(|e| {

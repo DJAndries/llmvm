@@ -1,15 +1,20 @@
 use anyhow::Result;
-use llmvm_protocol::jsonrpc::JsonRpcMessage;
+use llmvm_protocol::{
+    jsonrpc::JsonRpcMessage,
+    service::{CoreRequest, CoreResponse},
+    BoxedService,
+};
 use lsp_types::{
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
     },
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Range, Url,
 };
-use std::{cmp::min, collections::HashMap};
+use std::{cmp::min, collections::HashMap, sync::Arc};
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, BufReader},
+    sync::Mutex,
 };
 use tokio_stream::{wrappers::LinesStream, StreamExt};
 use tracing::trace;
@@ -18,23 +23,24 @@ use crate::lsp::LspMessage;
 
 const UNKNOWN_LANG_ID: &str = "unknown";
 
-#[derive(Debug)]
-pub struct SnippetInfo {
-    pub description: String,
-    pub snippet: String,
-}
-
 struct DocumentInfo {
     lines: Vec<String>,
     lang_id: String,
 }
 
-#[derive(Default)]
 pub struct ContentManager {
     content_map: HashMap<Url, DocumentInfo>,
+    llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
 }
 
 impl ContentManager {
+    pub fn new(llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>) -> Self {
+        Self {
+            content_map: HashMap::new(),
+            llmvm_core_service,
+        }
+    }
+
     pub async fn maybe_load_file(&mut self, uri: &Url) -> Result<()> {
         if !self.content_map.contains_key(uri) {
             let reader = BufReader::new(File::open(uri.path()).await?);

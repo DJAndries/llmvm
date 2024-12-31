@@ -16,10 +16,13 @@ use llmvm_util::config::load_config;
 use llmvm_util::logging::setup_subscriber;
 use passthrough::LspStdioPassthrough;
 use serde::Deserialize;
+use session::SessionSubscription;
 use tokio::{
     io::{stdin, stdout},
     process::Command,
+    sync::Mutex,
 };
+use tracing::error;
 
 mod adapter;
 mod complete;
@@ -28,6 +31,8 @@ mod interceptor;
 mod lsp;
 mod passthrough;
 mod service;
+mod session;
+mod tools;
 
 const CONFIG_FILENAME: &str = "codeassist.toml";
 const LOG_FILENAME: &str = "codeassist.log";
@@ -46,6 +51,8 @@ pub struct CodeAssistConfig {
 
     stream_snippets: bool,
     use_chat_threads: bool,
+
+    enable_tools: bool,
 }
 
 impl ConfigExampleSnippet for CodeAssistConfig {
@@ -68,7 +75,10 @@ impl ConfigExampleSnippet for CodeAssistConfig {
 # stream_snippets = false
 
 # Use chat threads to keep context from previous requests
-# use_chat_threads = false
+# use_chat_threads = true
+
+# Enable tools/function calling to allow edits from the chat app
+# enable_tools = true
 
 # Stdio core client configuration
 # [stdio_core]
@@ -92,7 +102,8 @@ impl Default for CodeAssistConfig {
             prefer_insert_in_place: false,
             default_preset: DEFAULT_PRESET.to_string(),
             stream_snippets: false,
-            use_chat_threads: false,
+            use_chat_threads: true,
+            enable_tools: true,
         }
     }
 }
@@ -132,20 +143,35 @@ async fn main() -> Result<()> {
         child.stdout.take().unwrap(),
     );
 
-    let llmvm_core_service: BoxedService<_, _> =
+    let llmvm_core_service: Arc<Mutex<BoxedService<_, _>>> = Arc::new(Mutex::new(
         build_core_service_from_config(config.stdio_core.take(), config.http_core.take())
             .await
-            .map_err(|e| anyhow!(e))?;
+            .map_err(|e| anyhow!(e))?,
+    ));
+
+    let passthrough_service = passthrough.get_service();
+
+    let enable_tools = config.enable_tools;
 
     let mut adapter = LspAdapter::new(
         Arc::new(config),
-        passthrough.get_service(),
-        llmvm_core_service,
+        passthrough_service.clone(),
+        llmvm_core_service.clone(),
     );
 
     passthrough.set_adapter_service(adapter.get_service());
 
     let adapter_handle = tokio::spawn(async move { adapter.run().await });
+
+    if enable_tools {
+        let session_subscription =
+            SessionSubscription::new(llmvm_core_service, passthrough_service);
+        tokio::spawn(async move {
+            if let Err(e) = session_subscription.run().await {
+                error!("failed to subscribe to session, tools disabled: {e}");
+            }
+        });
+    }
 
     passthrough.run().await?;
 

@@ -50,7 +50,7 @@ impl LspAdapter {
     pub fn new(
         config: Arc<CodeAssistConfig>,
         passthrough_service: LspMessageService,
-        llmvm_core_service: BoxedService<CoreRequest, CoreResponse>,
+        llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
     ) -> Self {
         let (service_tx, service_rx) = mpsc::unbounded_channel();
         Self {
@@ -59,11 +59,11 @@ impl LspAdapter {
             service_tx: Some(service_tx),
             passthrough_service,
             server_capabilities: None,
-            llmvm_core_service: Arc::new(Mutex::new(llmvm_core_service)),
+            llmvm_core_service: llmvm_core_service.clone(),
             current_thread_id: Default::default(),
             root_uri: None,
             complete_task_last_id: 0,
-            content_manager: Default::default(),
+            content_manager: Arc::new(Mutex::new(ContentManager::new(llmvm_core_service))),
             queued_random_context_locations: Default::default(),
         }
     }
@@ -120,23 +120,23 @@ impl LspAdapter {
             request_params.text_document.uri.clone(),
             request_params.range,
         ))?]);
-        result.push(CodeActionOrCommand::Command(Command {
-            title: "Complete code via LLM".to_string(),
-            command: CODE_COMPLETE_COMMAND_ID.to_string(),
-            arguments: location_args.clone(),
-        }));
-        result.push(CodeActionOrCommand::Command(Command {
-            title: "Add context to LLM code complete".to_string(),
-            command: MANUAL_CONTEXT_ADD_COMMAND_ID.to_string(),
-            arguments: location_args,
-        }));
         if self.config.use_chat_threads {
             result.push(CodeActionOrCommand::Command(Command {
-                title: "Use new LLM chat thread".to_string(),
+                title: "Start new LLM chat thread".to_string(),
                 command: NEW_CHAT_THREAD_COMMAND_ID.to_string(),
                 arguments: Some(Vec::new()),
             }));
         }
+        result.push(CodeActionOrCommand::Command(Command {
+            title: "Add context to LLM code complete".to_string(),
+            command: MANUAL_CONTEXT_ADD_COMMAND_ID.to_string(),
+            arguments: location_args.clone(),
+        }));
+        result.push(CodeActionOrCommand::Command(Command {
+            title: "Complete code via LLM".to_string(),
+            command: CODE_COMPLETE_COMMAND_ID.to_string(),
+            arguments: location_args,
+        }));
         let mut message = message.clone();
         message.set_result(result)?;
         Ok(Some(message))
