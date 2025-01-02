@@ -1,6 +1,7 @@
 use std::{
+    fs::OpenOptions,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use llmvm_protocol::{
@@ -11,7 +12,12 @@ use llmvm_util::{get_file_path, get_home_dirs, get_project_dir, DirType};
 use notify::{RecommendedWatcher, Watcher};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::{fs, sync::mpsc, task::JoinHandle, time::sleep};
+use tokio::{
+    fs::{self},
+    sync::mpsc,
+    task::JoinHandle,
+    time::sleep,
+};
 
 use crate::{
     error::CoreError,
@@ -127,7 +133,16 @@ pub(super) fn new_thread_id() -> String {
 pub(super) async fn save_thread(thread_id: &str, messages: Vec<Message>) -> Result<()> {
     let thread_path = thread_path(thread_id)?;
 
-    fs::write(thread_path, serde_json::to_vec(&messages)?).await?;
+    fs::write(
+        thread_path,
+        serde_json::to_vec(
+            &messages
+                .iter()
+                .filter(|v| !matches!(v.role, MessageRole::System))
+                .collect::<Vec<_>>(),
+        )?,
+    )
+    .await?;
     Ok(())
 }
 
@@ -161,10 +176,15 @@ pub(super) async fn get_thread_messages(
         id.clone()
     } else if let (Some(session_id), Some(tag)) = (&request.session_id, &request.session_tag) {
         let info = get_session_info(&session_id, &tag).await?;
-        let thread_path = thread_path(&info.thread_id)?;
-        let thread_id = match fs::try_exists(&thread_path).await? {
-            true => Some(info.thread_id),
-            false => None,
+        let thread_id = match info.thread_id {
+            Some(thread_id) => {
+                let thread_path = thread_path(&thread_id)?;
+                match fs::try_exists(&thread_path).await? {
+                    true => Some(thread_id),
+                    false => None,
+                }
+            }
+            None => None,
         };
         match thread_id {
             Some(thread_id) => thread_id,
@@ -194,7 +214,7 @@ fn get_thread_messages_sync(request: &GetThreadMessagesRequest) -> Result<Vec<Me
         id.clone()
     } else if let (Some(group_id), Some(tag)) = (&request.session_id, &request.session_tag) {
         let info = get_session_info_sync(&group_id, &tag)?;
-        info.thread_id
+        info.thread_id.ok_or(CoreError::ThreadNotFound)?
     } else {
         return Err(CoreError::ThreadNotFound);
     };
@@ -219,12 +239,12 @@ impl SubscriptionHandle {
             tokio::spawn(async move {
                 loop {
                     // update last modified time
-                    let _ = fs::OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(false)
-                        .open(&path)
-                        .await;
+                    let path_clone = path.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Ok(file) = OpenOptions::new().write(true).open(&path_clone) {
+                            let _ = file.set_modified(SystemTime::now());
+                        }
+                    });
 
                     // Sleep for 15 seconds
                     sleep(Duration::from_secs(15)).await;
@@ -301,11 +321,13 @@ pub(super) async fn subscribe_to_thread(
                             ) {
                                 // thread id in session info file does not match the one
                                 // we have cached, so there must be a new thread
-                                if info.thread_id != thread_id {
-                                    thread_id = info.thread_id.clone();
-                                    let _ = tx.send(ThreadEvent::NewThread {
-                                        thread_id: thread_id.clone(),
-                                    });
+                                if let Some(updated_thread_id) = info.thread_id {
+                                    if updated_thread_id != thread_id {
+                                        thread_id = updated_thread_id;
+                                        let _ = tx.send(ThreadEvent::NewThread {
+                                            thread_id: thread_id.clone(),
+                                        });
+                                    }
                                 }
                             }
                         } else if filename.starts_with(&thread_id) {

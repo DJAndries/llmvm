@@ -54,14 +54,14 @@ impl SystemRoleHelperState {
 
 /// A prompt that is ready to use for text generation.
 /// May contain an optional prompt for the system role.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ReadyPrompt {
     /// A system role prompt. For chat generation requests, this will be appended
     /// to the `thread_messages` of the backend generation request. For non-chat
     /// generation requests, the system prompt will be prepended to the main prompt.
     pub system_prompt: Option<String>,
     /// The main prompt. For chat generation requests, this prompt should use the user role.
-    pub main_prompt: String,
+    pub main_prompt: Option<String>,
 }
 
 impl ReadyPrompt {
@@ -106,7 +106,10 @@ impl ReadyPrompt {
 
         Ok(Self {
             system_prompt,
-            main_prompt,
+            main_prompt: match main_prompt.is_empty() {
+                true => None,
+                false => Some(main_prompt),
+            },
         })
     }
 
@@ -129,13 +132,5 @@ impl ReadyPrompt {
         is_chat_model: bool,
     ) -> Result<Self> {
         Self::process(template, parameters, is_chat_model)
-    }
-
-    /// Creates a `ReadyPrompt` from a completed prompt.
-    pub fn from_custom_prompt(main_prompt: String) -> Self {
-        Self {
-            system_prompt: None,
-            main_prompt,
-        }
     }
 }

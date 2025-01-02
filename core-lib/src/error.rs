@@ -46,8 +46,8 @@ pub enum CoreError {
     UnexpectedServiceResponse,
     #[error("file notification error: {0}")]
     FileNotify(#[from] notify::Error),
-    #[error("failed to parse tool calls")]
-    ToolCallParse,
+    #[error("failed to parse tool calls: {0}")]
+    ToolCallParse(&'static str),
 }
 
 impl Into<ProtocolError> for CoreError {
@@ -71,7 +71,7 @@ impl Into<ProtocolError> for CoreError {
             CoreError::HttpServiceCreate => ProtocolErrorType::Internal,
             CoreError::UnexpectedServiceResponse => ProtocolErrorType::Internal,
             CoreError::FileNotify(_) => ProtocolErrorType::Internal,
-            CoreError::ToolCallParse => ProtocolErrorType::Internal,
+            CoreError::ToolCallParse(_) => ProtocolErrorType::Internal,
         };
         ProtocolError {
             error_type,

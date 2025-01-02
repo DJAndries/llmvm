@@ -14,13 +14,13 @@ use crate::Result;
 
 pub(super) const SESSION_INFO_FILENAME: &str = "info.json";
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub(super) struct SessionInfo {
-    pub thread_id: String,
+    pub thread_id: Option<String>,
     pub prompt_parameters: HashMap<String, SessionPromptParameter>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(super) struct SessionSubscriberInfo {
     #[serde(skip)]
     pub client_id: String,
@@ -91,11 +91,11 @@ pub(super) async fn start_new_thread_in_session(session_id: &str, tag: &str) -> 
     let info = match fs::try_exists(&path).await? {
         true => {
             let mut existing_info: SessionInfo = serde_json::from_slice(&fs::read(&path).await?)?;
-            existing_info.thread_id = thread_id.clone();
+            existing_info.thread_id = Some(thread_id.clone());
             existing_info
         }
         false => SessionInfo {
-            thread_id: thread_id.clone(),
+            thread_id: Some(thread_id.clone()),
             prompt_parameters: Default::default(),
         },
     };
@@ -110,7 +110,7 @@ pub(super) async fn store_session_prompt_parameter(
     session_id: &str,
     tag: &str,
     param_name: String,
-    param_info: SessionPromptParameter,
+    param_info: Option<SessionPromptParameter>,
 ) -> Result<()> {
     let path = create_and_get_session_path(&session_id, &tag)
         .await?
@@ -119,7 +119,10 @@ pub(super) async fn store_session_prompt_parameter(
     let bytes = fs::read(&path).await?;
     let mut info: SessionInfo = serde_json::from_slice(&bytes)?;
 
-    info.prompt_parameters.insert(param_name, param_info);
+    match param_info {
+        Some(param_info) => info.prompt_parameters.insert(param_name, param_info),
+        None => info.prompt_parameters.remove(&param_name),
+    };
 
     fs::write(path, serde_json::to_vec(&info)?).await?;
     Ok(())
@@ -183,7 +186,7 @@ pub(super) fn get_session_info_sync(session_id: &str, tag: &str) -> Result<Sessi
     let path = session_path(session_id, tag)?.join(SESSION_INFO_FILENAME);
     let info: SessionInfo = match path.exists() {
         true => serde_json::from_slice(&std::fs::read(&path)?)?,
-        false => return Err(CoreError::ThreadNotFound),
+        false => Default::default(),
     };
     Ok(info)
 }
@@ -194,7 +197,7 @@ pub(super) async fn get_session_info(session_id: &str, tag: &str) -> Result<Sess
         .join(SESSION_INFO_FILENAME);
     let info: SessionInfo = match fs::try_exists(&path).await.unwrap_or_default() {
         true => serde_json::from_slice(&fs::read(&path).await?)?,
-        false => return Err(CoreError::ThreadNotFound),
+        false => Default::default(),
     };
     Ok(info)
 }

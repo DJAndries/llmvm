@@ -1,0 +1,3 @@
+model = "outsource/anthropic-chat/claude-3-5-sonnet-latest"
+prompt_template_id = "codechat"
+max_tokens = 8192

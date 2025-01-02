@@ -48,6 +48,7 @@ pub enum MessageRole {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     /// ID of the client that sent or received the message.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     /// The actor who presented the message.
     pub role: MessageRole,
@@ -227,7 +228,7 @@ pub struct SessionPromptParameter {
     pub persistent: bool,
 }
 
-/// Request to store a prompt parameter for a given session for future requests
+/// Request to store or remove a prompt parameter for a given session for future requests
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreSessionPromptParameterRequest {
     /// Key of the parameter
@@ -236,8 +237,8 @@ pub struct StoreSessionPromptParameterRequest {
     pub session_id: String,
     /// Tag within the session
     pub session_tag: String,
-    /// Details of the parameter
-    pub parameter: SessionPromptParameter,
+    /// Details of the parameter. If `None`, the parameter will be removed from the session.
+    pub parameter: Option<SessionPromptParameter>,
 }
 
 /// A parsed model id data structure.

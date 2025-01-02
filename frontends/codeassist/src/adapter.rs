@@ -19,7 +19,8 @@ use crate::{
     content::ContentManager,
     lsp::{
         LspMessage, CODE_COMPLETE_COMMAND_ID, MANUAL_CONTEXT_ADD_COMMAND_ID,
-        NEW_CHAT_THREAD_COMMAND_ID, TOGGLE_FILE_CONTEXT_COMMAND_ID,
+        NEW_CHAT_THREAD_COMMAND_ID, REMOVE_ALL_FILE_CONTEXT_COMMAND_ID,
+        TOGGLE_FILE_CONTEXT_COMMAND_ID,
     },
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
     CodeAssistConfig,
@@ -133,22 +134,27 @@ impl LspAdapter {
             }));
         }
         if self.config.enable_tools {
-            let title = if !self
-                .content_manager
-                .lock()
-                .await
-                .is_file_context_enabled(&uri)
             {
-                "Include entire file as context"
-            } else {
-                "Remove entire file from context"
+                let content_manager = self.content_manager.lock().await;
+                if content_manager.is_any_file_context_enabled() {
+                    result.push(CodeActionOrCommand::Command(Command {
+                        title: "Remove all entire files from context".to_string(),
+                        command: REMOVE_ALL_FILE_CONTEXT_COMMAND_ID.to_string(),
+                        arguments: None,
+                    }))
+                }
+                let title = if !content_manager.is_file_context_enabled(&uri) {
+                    "Include entire file as context"
+                } else {
+                    "Remove entire file from context"
+                }
+                .to_string();
+                result.push(CodeActionOrCommand::Command(Command {
+                    title,
+                    command: TOGGLE_FILE_CONTEXT_COMMAND_ID.to_string(),
+                    arguments: Some(vec![serde_json::to_value(uri).unwrap()]),
+                }));
             }
-            .to_string();
-            result.push(CodeActionOrCommand::Command(Command {
-                title,
-                command: TOGGLE_FILE_CONTEXT_COMMAND_ID.to_string(),
-                arguments: Some(vec![serde_json::to_value(uri).unwrap()]),
-            }));
         }
         result.push(CodeActionOrCommand::Command(Command {
             title: "Add context for code completion".to_string(),
@@ -269,6 +275,13 @@ impl LspAdapter {
                                     }
                                     TOGGLE_FILE_CONTEXT_COMMAND_ID => {
                                         self.handle_toggle_file_context_command(params).await
+                                    }
+                                    REMOVE_ALL_FILE_CONTEXT_COMMAND_ID => {
+                                        self.content_manager
+                                            .lock()
+                                            .await
+                                            .disable_all_file_contexts();
+                                        Ok(())
                                     }
                                     _ => Ok(()),
                                 },

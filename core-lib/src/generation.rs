@@ -20,7 +20,7 @@ use crate::sessions::{
 };
 use crate::threads::{get_thread_messages, maybe_save_thread_messages_and_get_thread_id};
 use crate::tools::{
-    extract_text_tool_calls, generate_text_tools_prompt, inject_client_id_into_tools,
+    extract_text_tool_calls, generate_text_tools_prompt_parameters, inject_client_id_into_tools,
 };
 use crate::{LLMVMCore, Result};
 
@@ -153,10 +153,13 @@ pub(super) async fn prepare_for_generate(
             let mut subscribers = get_session_subscribers(&session_id, &session_tag).await?;
             inject_client_id_into_tools(&mut subscribers);
 
-            let tools_prompt = generate_text_tools_prompt(&subscribers);
-            if !tools_prompt.is_empty() {
+            debug!("subscriber info: {:?}", subscribers);
+
+            let tools_prompt_params = generate_text_tools_prompt_parameters(&subscribers);
+            if !tools_prompt_params.is_empty() {
                 text_tools_used = true;
-                prompt_parameters[TEXT_TOOLS_PARAM_NAME] = tools_prompt.into();
+                prompt_parameters[TEXT_TOOLS_PARAM_NAME] =
+                    serde_json::to_value(tools_prompt_params)?;
             }
 
             let session_prompt_parameters =
@@ -174,7 +177,7 @@ pub(super) async fn prepare_for_generate(
         _ => None,
     };
 
-    let prompt = match parameters.custom_prompt_template {
+    let mut prompt = match parameters.custom_prompt_template {
         Some(template) => {
             ReadyPrompt::from_custom_template(&template, &prompt_parameters, is_chat_model)?
         }
@@ -183,15 +186,17 @@ pub(super) async fn prepare_for_generate(
                 ReadyPrompt::from_stored_template(&template_id, &prompt_parameters, is_chat_model)
                     .await?
             }
-            None => ReadyPrompt::from_custom_prompt(
-                request
-                    .custom_prompt
-                    .as_ref()
-                    .ok_or(CoreError::TemplateNotFound)?
-                    .clone(),
-            ),
+            None => Default::default(),
         },
     };
+
+    if let Some(custom_prompt) = request.custom_prompt.clone() {
+        prompt.main_prompt = Some(custom_prompt);
+    }
+
+    if prompt.main_prompt.is_none() {
+        return Err(CoreError::TemplateNotFound);
+    }
 
     let (mut thread_messages, existing_thread_id) =
         match request.existing_thread_id.is_some() || request.session_id.is_some() {
@@ -232,7 +237,7 @@ pub(super) async fn prepare_for_generate(
             clone.push(Message {
                 client_id: request.client_id.clone(),
                 role: MessageRole::User,
-                content: prompt.main_prompt.clone(),
+                content: prompt.main_prompt.clone().unwrap(),
                 tool_calls: None,
             });
             Some(clone)
@@ -240,13 +245,23 @@ pub(super) async fn prepare_for_generate(
         false => None,
     };
 
+    let backend_thread_messages = thread_messages.map(|v| {
+        v.into_iter()
+            .map(|mut m| {
+                m.client_id = None;
+                m.tool_calls = None;
+                m
+            })
+            .collect()
+    });
+
     let backend_request = BackendGenerationRequest {
         model,
-        prompt: prompt.main_prompt,
+        prompt: prompt.main_prompt.unwrap(),
         max_tokens: parameters
             .max_tokens
             .ok_or(CoreError::MissingParameter("max_tokens"))?,
-        thread_messages,
+        thread_messages: backend_thread_messages,
         model_parameters: parameters.model_parameters,
     };
 
@@ -281,10 +296,12 @@ pub(super) async fn finish_generation(
     let mut tool_calls = Vec::new();
     if let Some(subscriber_infos) = preparation.subscriber_infos {
         if preparation.text_tools_used {
+            debug!("extracting text tool calls");
             tool_calls = extract_text_tool_calls(&subscriber_infos, &full_response)?;
         }
     }
 
+    debug!("saving thread messages");
     let thread_id = maybe_save_thread_messages_and_get_thread_id(
         &request,
         full_response.clone(),

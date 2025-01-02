@@ -109,8 +109,8 @@ pub mod logging {
                     .with_writer(
                         OpenOptions::new()
                             .create(true)
-                            .truncate(true)
-                            .write(true)
+                            .truncate(false)
+                            .append(true)
                             .open(
                                 get_file_path(DirType::Logs, filename, true)
                                     .expect("should be able to find log path"),

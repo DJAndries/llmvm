@@ -204,6 +204,12 @@ impl ContentManager {
         })
     }
 
+    pub fn is_any_file_context_enabled(&self) -> bool {
+        self.content_map
+            .values()
+            .any(|doc_info| doc_info.file_context_update_notifier.is_some())
+    }
+
     pub fn toggle_file_context(&mut self, content_manager_arc: &Arc<Mutex<Self>>, uri: &Url) {
         if let Some(doc_info) = self.content_map.get_mut(uri) {
             if doc_info.file_context_update_notifier.is_some() {
@@ -213,7 +219,7 @@ impl ContentManager {
             let (tx, mut rx) = mpsc::unbounded_channel::<()>();
             doc_info.file_context_update_notifier = Some(tx);
 
-            let uri = uri.clone();
+            let uri_clone = uri.clone();
             let content_manager = content_manager_arc.clone();
 
             tokio::spawn(async move {
@@ -224,61 +230,85 @@ impl ContentManager {
                             if !storage_pending {
                                 continue;
                             }
+                            storage_pending = false;
                             if let Err(e) = content_manager
                                 .lock()
                                 .await
-                                .store_file_context_session_parameter(&uri)
+                                .set_file_context_session_parameter(&uri_clone, true)
                                 .await {
                                 error!("failed to store session prompt parameter: {e}");
                             }
                         }
                         result = rx.recv() => {
                             match result {
-                                None => break,
+                                None => {
+                                    if let Err(e) = content_manager
+                                        .lock()
+                                        .await
+                                        .set_file_context_session_parameter(&uri_clone, false)
+                                        .await {
+                                        error!("failed to clear session prompt parameter: {e}");
+                                    }
+                                    return;
+                                },
                                 Some(()) => storage_pending = true
                             };
                         }
                     }
                 }
             });
+
+            self.notify_file_context_update(uri);
         }
     }
 
-    async fn store_file_context_session_parameter(&self, uri: &Url) -> Result<()> {
-        if let Some(doc_info) = self.content_map.get(uri) {
-            let file_path = uri.path().to_string();
-            let param_key = format!("codeassist_file_content.{}", file_path.replace(".", "_"));
+    pub fn disable_all_file_contexts(&mut self) {
+        for doc_info in self.content_map.values_mut() {
+            doc_info.file_context_update_notifier = None;
+        }
+    }
 
-            let content = doc_info
-                .lines
-                .iter()
-                .enumerate()
-                .map(|(i, v)| format!("{}: {}", i + 1, v))
-                .collect::<Vec<String>>()
-                .join("\n");
+    async fn set_file_context_session_parameter(&self, uri: &Url, enabled: bool) -> Result<()> {
+        let file_path = uri.path().to_string();
+        let param_key = format!("codeassist_file_content.{}", file_path.replace(".", "_"));
+        let parameter = match enabled {
+            true => match self.content_map.get(uri) {
+                Some(doc_info) => {
+                    let content = doc_info
+                        .lines
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| format!("{}: {}", i + 1, v))
+                        .collect::<Vec<String>>()
+                        .join("\n");
 
-            for tag in ALL_SESSION_TAGS {
-                self.llmvm_core_service
-                    .lock()
-                    .await
-                    .call(CoreRequest::StoreSessionPromptParameter(
-                        StoreSessionPromptParameterRequest {
-                            key: param_key.clone(),
-                            session_id: self.session_id.clone(),
-                            session_tag: tag.to_string(),
-                            parameter: SessionPromptParameter {
-                                persistent: true,
-                                value: serde_json::to_value(FileContext {
-                                    content: content.clone(),
-                                    file_path: file_path.clone(),
-                                })
-                                .unwrap(),
-                            },
-                        },
-                    ))
-                    .await
-                    .map_err(|e| anyhow!(e))?;
-            }
+                    Some(SessionPromptParameter {
+                        persistent: true,
+                        value: serde_json::to_value(FileContext {
+                            content: content.clone(),
+                            file_path: file_path.clone(),
+                        })?,
+                    })
+                }
+                None => None,
+            },
+            false => None,
+        };
+
+        for tag in ALL_SESSION_TAGS {
+            self.llmvm_core_service
+                .lock()
+                .await
+                .call(CoreRequest::StoreSessionPromptParameter(
+                    StoreSessionPromptParameterRequest {
+                        key: param_key.clone(),
+                        session_id: self.session_id.clone(),
+                        session_tag: tag.to_string(),
+                        parameter: parameter.clone(),
+                    },
+                ))
+                .await
+                .map_err(|e| anyhow!(e))?;
         }
         Ok(())
     }

@@ -1,7 +1,7 @@
 [workspace]
 members = [
-  "./backends/llmrs",
-  "./backends/llmrs-lib",
+  # "./backends/llmrs",
+  # "./backends/llmrs-lib",
   "./backends/outsource",
   "./backends/outsource-lib",
   "./core",

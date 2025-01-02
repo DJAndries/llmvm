@@ -76,6 +76,8 @@ async fn send_generate_request(
     messages.push(Message {
         role: MessageRole::User,
         content: request.prompt,
+        client_id: None,
+        tool_calls: None,
     });
     body.insert(MESSAGES_KEY.to_string(), serde_json::to_value(messages)?);
 

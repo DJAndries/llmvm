@@ -1,4 +1,5 @@
 use llmvm_protocol::{ToolCall, ToolType};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::error::CoreError;
@@ -31,7 +32,7 @@ fn init_tool_call<'a>(
                 .tools
                 .as_ref()
                 .and_then(|tools| tools.iter().find(|t| t.name == function_name))
-                .ok_or(CoreError::ToolCallParse)?;
+                .ok_or(CoreError::ToolCallParse("tool does not exist for client"))?;
 
             return Ok((
                 ToolCall {
@@ -44,7 +45,7 @@ fn init_tool_call<'a>(
             ));
         }
     }
-    Err(CoreError::ToolCallParse)
+    Err(CoreError::ToolCallParse("tool does not exist"))
 }
 
 fn insert_tool_call_argument(
@@ -60,7 +61,9 @@ fn insert_tool_call_argument(
         .and_then(|prop| prop.get("type"))
         .and_then(|t| t.as_str())
         .map(|t| t == "integer")
-        .ok_or(CoreError::ToolCallParse)?;
+        .ok_or(CoreError::ToolCallParse(
+            "failed to check type of tool property",
+        ))?;
 
     let value = if is_integer {
         if let Ok(num) = current_value.parse::<i64>() {
@@ -95,22 +98,20 @@ pub(super) fn extract_text_tool_calls(
         MultilineArg,
     }
 
-    let mut current_tool_call_and_schema = None;
-
-    let mut current_index = 0;
     let mut result = Vec::new();
 
-    while let Some(call_header_index) = text[current_index..].find(TEXT_TOOL_CALL_HEADER) {
-        let function_name_index = call_header_index + TEXT_TOOL_CALL_HEADER.len();
-        let mut call_chars = text[function_name_index..].chars();
+    let mut chars = text.chars();
+
+    while let Some(call_header_index) = chars.as_str().find(TEXT_TOOL_CALL_HEADER) {
+        chars.nth(call_header_index + TEXT_TOOL_CALL_HEADER.len() - 1);
+
+        let mut current_tool_call_and_schema = None;
 
         let mut state = ExtractState::ReadFunctionName;
         let mut arg_name = String::new();
         let mut current_value = String::new();
-        let mut chars_processed = 0;
 
-        while let Some(c) = call_chars.next() {
-            chars_processed += 1;
+        while let Some(c) = chars.next() {
             match state {
                 ExtractState::ReadFunctionName => {
                     if c == ':' {
@@ -126,6 +127,7 @@ pub(super) fn extract_text_tool_calls(
                     if c.is_whitespace() {
                         continue;
                     } else if c.is_alphanumeric() {
+                        arg_name.push(c);
                         state = ExtractState::ReadArgName;
                     } else if c == ';' {
                         break;
@@ -142,16 +144,20 @@ pub(super) fn extract_text_tool_calls(
                     state = match c {
                         '"' => ExtractState::ReadArgValue,
                         '$' => {
-                            let peek = call_chars.as_str();
+                            let peek = chars.as_str();
                             if peek.starts_with(&MULTILINE_TOKEN[1..]) {
                                 // skip the token and the newline after it
-                                call_chars.nth(MULTILINE_TOKEN.len() - 1);
+                                chars.nth(MULTILINE_TOKEN.len() - 1);
                                 ExtractState::MultilineArg
                             } else {
-                                return Err(CoreError::ToolCallParse);
+                                return Err(CoreError::ToolCallParse("unrecognized '$' token"));
                             }
                         }
-                        _ => return Err(CoreError::ToolCallParse),
+                        _ => {
+                            return Err(CoreError::ToolCallParse(
+                                "unexpected argument value start token",
+                            ))
+                        }
                     };
                 }
                 ExtractState::ReadArgValue => {
@@ -173,9 +179,9 @@ pub(super) fn extract_text_tool_calls(
                 }
                 ExtractState::MultilineArg => {
                     if c == '$' {
-                        let peek = call_chars.as_str();
+                        let peek = chars.as_str();
                         if peek.starts_with(&MULTILINE_TOKEN[1..]) {
-                            call_chars.nth(MULTILINE_TOKEN.len() - 2);
+                            chars.nth(MULTILINE_TOKEN.len() - 2);
 
                             insert_tool_call_argument(
                                 current_tool_call_and_schema.as_mut().unwrap(),
@@ -194,29 +200,31 @@ pub(super) fn extract_text_tool_calls(
             }
         }
         result.push(current_tool_call_and_schema.take().unwrap().0);
-
-        current_index = function_name_index + chars_processed;
     }
 
     Ok(result)
 }
 
-pub(super) fn generate_text_tools_prompt(subscriber_infos: &[SessionSubscriberInfo]) -> String {
-    let mut prompt = String::new();
+#[derive(Serialize)]
+pub(super) struct TextToolPromptParameters {
+    name: String,
+    description: String,
+    arguments: Vec<String>,
+    usage_format: String,
+}
+
+pub(super) fn generate_text_tools_prompt_parameters(
+    subscriber_infos: &[SessionSubscriberInfo],
+) -> Vec<TextToolPromptParameters> {
+    let mut result = Vec::new();
     for info in subscriber_infos {
         if let Some(tools) = &info.tools {
             for tool in tools {
                 if let ToolType::Text = tool.tool_type {
-                    // Add tool name and description
-                    prompt.push_str(&format!(
-                        "Tool: {}\nDescription: {}\n",
-                        tool.name, tool.description
-                    ));
-
                     // Parse input schema and extract properties
                     if let Value::Object(schema) = &tool.input_schema {
                         if let Some(Value::Object(properties)) = schema.get("properties") {
-                            prompt.push_str("Arguments:\n");
+                            let mut arguments = Vec::new();
 
                             // Process each property in the schema
                             for (prop_name, prop_value) in properties {
@@ -226,13 +234,12 @@ pub(super) fn generate_text_tools_prompt(subscriber_infos: &[SessionSubscriberIn
                                         .and_then(Value::as_str)
                                         .unwrap_or("");
 
-                                    prompt.push_str(&format!("- {}: {}\n", prop_name, description));
+                                    arguments.push(format!("{}: {}\n", prop_name, description));
                                 }
                             }
 
-                            // Add usage instruction
-                            prompt.push_str("\nTo use this tool, output the following, preserving the quotes:\n");
-                            prompt.push_str(&format!("$$llmvm_tool$$ {}:", tool.name));
+                            let mut usage_format = String::new();
+                            usage_format.push_str(&format!("$$llmvm_tool$$ {}:", tool.name));
 
                             let mut props = Vec::new();
                             // Add example argument placeholders
@@ -244,16 +251,23 @@ pub(super) fn generate_text_tools_prompt(subscriber_infos: &[SessionSubscriberIn
                                     .unwrap_or("")
                                     .to_lowercase();
 
-                                if prop_desc.contains("multiline") {
+                                if prop_desc.to_lowercase().contains("multiline") {
                                     props.push(format!(
-                                        "$$multiline$$\n<{} value>\n$$multiline$$",
-                                        prop_name
+                                        "{}=$$multiline$$\n<{} value>\n$$multiline$$",
+                                        prop_name, prop_name
                                     ));
                                 } else {
                                     props.push(format!("{}=\"value of {}\"", prop_name, prop_name));
                                 }
                             }
-                            prompt.push_str(&format!("{};\n\n", props.join(" ")))
+                            usage_format.push_str(&format!("{};\n\n", props.join(" ")));
+
+                            result.push(TextToolPromptParameters {
+                                name: tool.name.clone(),
+                                description: tool.description.clone(),
+                                arguments,
+                                usage_format,
+                            });
                         }
                     }
                 }
@@ -261,5 +275,5 @@ pub(super) fn generate_text_tools_prompt(subscriber_infos: &[SessionSubscriberIn
         }
     }
 
-    prompt
+    result
 }

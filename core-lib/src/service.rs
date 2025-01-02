@@ -123,7 +123,7 @@ impl Core for LLMVMCore {
     ) -> Result<NotificationStream<ThreadEvent>, ProtocolError> {
         async {
             Ok(stream! {
-                let (mut rx, mut watcher) = subscribe_to_thread(request.clone()).await?;
+                let (mut rx, mut handle) = subscribe_to_thread(request.clone()).await?;
                 let current_subscribers = match (&request.session_id, &request.session_tag) {
                     (Some(session_id), Some(session_tag)) => {
                         Some(get_session_subscribers(session_id, session_tag).await?.into_iter().map(|i| i.client_id).collect())
@@ -133,11 +133,11 @@ impl Core for LLMVMCore {
                 yield Ok(ThreadEvent::Start { current_subscribers });
                 while let Some(message) = rx.recv().await {
                     if let ThreadEvent::NewThread { .. } = &message {
-                        (rx, watcher) = subscribe_to_thread(request.clone()).await?;
+                        drop(handle);
+                        (rx, handle) = subscribe_to_thread(request.clone()).await?;
                     }
                     yield Ok(message);
                 }
-                drop(watcher);
             }
             .boxed())
         }

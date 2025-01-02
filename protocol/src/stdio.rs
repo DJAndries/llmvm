@@ -30,6 +30,9 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
             GET_THREAD_MESSAGES_METHOD => CoreRequest::GetThreadMessages(value.parse_params()?),
             LISTEN_ON_THREAD_METHOD => CoreRequest::SubscribeToThread(value.parse_params()?),
             NEW_THREAD_IN_SESSION_METHOD => CoreRequest::NewThreadInSession(value.parse_params()?),
+            STORE_SESSION_PROMPT_PARAMETER_METHOD => {
+                CoreRequest::StoreSessionPromptParameter(value.parse_params()?)
+            }
             _ => return Ok(None),
         }))
     }
