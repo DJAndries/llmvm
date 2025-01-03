@@ -15,8 +15,7 @@ use crate::error::CoreError;
 use crate::presets::load_preset;
 use crate::prompts::ReadyPrompt;
 use crate::sessions::{
-    clean_non_persistent_prompt_parameters, get_session_prompt_parameters, get_session_subscribers,
-    SessionSubscriberInfo,
+    get_session_prompt_parameters, get_session_subscribers, SessionSubscriberInfo,
 };
 use crate::threads::{get_thread_messages, maybe_save_thread_messages_and_get_thread_id};
 use crate::tools::{
@@ -65,7 +64,6 @@ pub(super) struct GenerationPreparation {
     pub existing_thread_id: Option<String>,
     pub subscriber_infos: Option<Vec<SessionSubscriberInfo>>,
     pub text_tools_used: bool,
-    pub session_prompt_parameters_used: bool,
 }
 
 impl LLMVMCore {
@@ -146,7 +144,6 @@ pub(super) async fn prepare_for_generate(
         .unwrap_or(Value::Object(Default::default()));
 
     let mut text_tools_used = false;
-    let mut session_prompt_parameters_used = false;
     // If using session, add frontend tools and prompt parameters
     let subscriber_infos = match (&request.session_id, &request.session_tag) {
         (Some(session_id), Some(session_tag)) => {
@@ -162,14 +159,12 @@ pub(super) async fn prepare_for_generate(
                     serde_json::to_value(tools_prompt_params)?;
             }
 
-            let session_prompt_parameters =
-                get_session_prompt_parameters(session_id, session_tag).await?;
+            let session_prompt_parameters = get_session_prompt_parameters(&subscribers).await?;
             if !session_prompt_parameters.is_empty() {
                 prompt_parameters
                     .as_object_mut()
                     .unwrap()
                     .extend(session_prompt_parameters);
-                session_prompt_parameters_used = true;
             }
 
             Some(subscribers)
@@ -282,7 +277,6 @@ pub(super) async fn prepare_for_generate(
             existing_thread_id,
             subscriber_infos,
             text_tools_used,
-            session_prompt_parameters_used,
         },
     ))
 }
@@ -310,14 +304,6 @@ pub(super) async fn finish_generation(
         preparation.existing_thread_id,
     )
     .await?;
-
-    if preparation.session_prompt_parameters_used {
-        clean_non_persistent_prompt_parameters(
-            request.session_id.as_ref().unwrap(),
-            request.session_tag.as_ref().unwrap(),
-        )
-        .await?;
-    }
 
     Ok(GenerationResponse {
         response: match streamed {

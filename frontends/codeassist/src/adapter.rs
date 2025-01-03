@@ -4,6 +4,7 @@ use anyhow::{anyhow, Result};
 use llmvm_protocol::{
     jsonrpc::{JsonRpcMessage, JsonRpcRequest},
     service::{BoxedService, CoreRequest, CoreResponse},
+    NewThreadInSessionRequest,
 };
 use lsp_types::{
     request::{CodeActionRequest, ExecuteCommand, Initialize, Request},
@@ -23,6 +24,7 @@ use crate::{
         TOGGLE_FILE_CONTEXT_COMMAND_ID,
     },
     service::{LspMessageInfo, LspMessageService, LspMessageTrx},
+    session::CODEGEN_TAG,
     CodeAssistConfig,
 };
 
@@ -37,7 +39,7 @@ pub struct LspAdapter {
 
     llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
 
-    current_thread_id: Arc<Mutex<Option<String>>>,
+    session_id: String,
 
     root_uri: Option<Url>,
     complete_task_last_id: usize,
@@ -53,6 +55,7 @@ impl LspAdapter {
         passthrough_service: LspMessageService,
         llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
         session_id: String,
+        client_id: String,
     ) -> Self {
         let (service_tx, service_rx) = mpsc::unbounded_channel();
         Self {
@@ -62,12 +65,13 @@ impl LspAdapter {
             passthrough_service,
             server_capabilities: None,
             llmvm_core_service: llmvm_core_service.clone(),
-            current_thread_id: Default::default(),
+            session_id: session_id.clone(),
             root_uri: None,
             complete_task_last_id: 0,
             content_manager: Arc::new(Mutex::new(ContentManager::new(
                 llmvm_core_service,
                 session_id,
+                client_id,
             ))),
             queued_random_context_locations: Default::default(),
         }
@@ -206,7 +210,7 @@ impl LspAdapter {
             .map(|v| v.0)
             .collect();
         self.complete_task_last_id += 1;
-        let current_thread_id = self.current_thread_id.clone();
+        let session_id = self.session_id.clone();
         tokio::spawn(async move {
             let code_complete = CodeCompleteTask::new(
                 config,
@@ -218,7 +222,7 @@ impl LspAdapter {
                 code_location,
                 task_id,
                 random_context_locations,
-                current_thread_id,
+                session_id,
             );
             code_complete.run().await.ok();
         });
@@ -234,6 +238,19 @@ impl LspAdapter {
             self.queued_random_context_locations.len()
         );
         Ok(())
+    }
+
+    async fn handle_new_chat_command(&self) -> Result<()> {
+        self.llmvm_core_service
+            .lock()
+            .await
+            .call(CoreRequest::NewThreadInSession(NewThreadInSessionRequest {
+                session_id: self.session_id.clone(),
+                tag: CODEGEN_TAG.to_string(),
+            }))
+            .await
+            .map_err(|e| anyhow!(e))
+            .map(|_| ())
     }
 
     async fn handle_doc_sync_notification(
@@ -270,8 +287,7 @@ impl LspAdapter {
                                         self.handle_add_context_command(params)
                                     }
                                     NEW_CHAT_THREAD_COMMAND_ID => {
-                                        *self.current_thread_id.lock().await = None;
-                                        Ok(())
+                                        self.handle_new_chat_command().await
                                     }
                                     TOGGLE_FILE_CONTEXT_COMMAND_ID => {
                                         self.handle_toggle_file_context_command(params).await

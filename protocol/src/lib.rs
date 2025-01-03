@@ -224,8 +224,6 @@ pub struct ToolCall {
 pub struct SessionPromptParameter {
     /// Value of the parameter
     pub value: Value,
-    /// If true, the prompt parameter will be included in all future requests
-    pub persistent: bool,
 }
 
 /// Request to store or remove a prompt parameter for a given session for future requests
@@ -237,6 +235,8 @@ pub struct StoreSessionPromptParameterRequest {
     pub session_id: String,
     /// Tag within the session
     pub session_tag: String,
+    /// Client ID of session member
+    pub client_id: String,
     /// Details of the parameter. If `None`, the parameter will be removed from the session.
     pub parameter: Option<SessionPromptParameter>,
 }

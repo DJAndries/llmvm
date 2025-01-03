@@ -7,20 +7,20 @@ use llmvm_protocol::{
     tower::Service,
     BoxedService, ServiceResponse, SubscribeToThreadRequest, ThreadEvent,
 };
-use llmvm_util::generate_client_id;
 use tokio::sync::Mutex;
 
 use crate::{service::LspMessageService, tools::Tools};
 
-const CODEGEN_TAG: &str = "codegen";
-const CODECHAT_TAG: &str = "codechat";
+pub const CODEGEN_TAG: &str = "codegen";
+pub const CODECHAT_TAG: &str = "codechat";
 pub const ALL_SESSION_TAGS: [&str; 2] = [CODEGEN_TAG, CODECHAT_TAG];
-const CODEASSIST_CLIENT_PREFIX: &str = "codeassist";
+pub const CODEASSIST_CLIENT_PREFIX: &str = "codeassist";
 
 pub struct SessionSubscription {
     llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
     passthrough_service: Option<LspMessageService>,
     session_id: String,
+    client_id: String,
 }
 
 impl SessionSubscription {
@@ -28,18 +28,22 @@ impl SessionSubscription {
         llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
         passthrough_service: LspMessageService,
         session_id: String,
+        client_id: String,
     ) -> Self {
         Self {
             llmvm_core_service,
             passthrough_service: Some(passthrough_service),
             session_id,
+            client_id,
         }
     }
 
     pub async fn run(mut self) -> Result<()> {
-        let client_id = generate_client_id(CODEASSIST_CLIENT_PREFIX);
         let tool_definitions = Tools::get_definitions();
-        let mut tools = Tools::new(client_id.clone(), self.passthrough_service.take().unwrap());
+        let mut tools = Tools::new(
+            self.client_id.clone(),
+            self.passthrough_service.take().unwrap(),
+        );
 
         let codegen_response = self
             .llmvm_core_service
@@ -48,7 +52,7 @@ impl SessionSubscription {
             .call(CoreRequest::SubscribeToThread(SubscribeToThreadRequest {
                 session_id: Some(self.session_id.clone()),
                 session_tag: Some(CODEGEN_TAG.to_string()),
-                client_id: client_id.clone(),
+                client_id: self.client_id.clone(),
                 tools: Some(tool_definitions.clone()),
                 ..Default::default()
             }))
@@ -61,7 +65,7 @@ impl SessionSubscription {
             .call(CoreRequest::SubscribeToThread(SubscribeToThreadRequest {
                 session_id: Some(self.session_id.clone()),
                 session_tag: Some(CODECHAT_TAG.to_string()),
-                client_id: client_id.clone(),
+                client_id: self.client_id.clone(),
                 tools: Some(tool_definitions),
                 ..Default::default()
             }))

@@ -284,6 +284,7 @@ pub(super) async fn subscribe_to_thread(
             let subscriber_info = SessionSubscriberInfo {
                 client_id: Default::default(),
                 tools: request.tools.clone(),
+                prompt_parameters: Default::default(),
             };
             fs::write(&subscriber_file, serde_json::to_vec(&subscriber_info)?).await?;
 

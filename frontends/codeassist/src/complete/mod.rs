@@ -21,7 +21,9 @@ use tokio::sync::Mutex;
 use tower::Service;
 use tracing::error;
 
-use crate::{content::ContentManager, service::LspMessageService, CodeAssistConfig};
+use crate::{
+    content::ContentManager, service::LspMessageService, session::CODEGEN_TAG, CodeAssistConfig,
+};
 
 use self::processing::IdentifiedGenerationResponseStream;
 
@@ -83,7 +85,7 @@ pub struct CodeCompleteTask {
 
     notify_complete_status: Arc<Mutex<bool>>,
 
-    thread_id: Arc<Mutex<Option<String>>>,
+    session_id: String,
 }
 
 impl CodeCompleteTask {
@@ -97,7 +99,7 @@ impl CodeCompleteTask {
         code_location: Location,
         task_id: usize,
         random_context_locations: Vec<Location>,
-        thread_id: Arc<Mutex<Option<String>>>,
+        session_id: String,
     ) -> Self {
         let supports_semantic_tokens = server_capabilities
             .map(|c| c.semantic_tokens_provider.is_some())
@@ -121,7 +123,7 @@ impl CodeCompleteTask {
             task_id,
             random_context_locations,
             notify_complete_status: Default::default(),
-            thread_id,
+            session_id,
         }
     }
 
@@ -173,6 +175,10 @@ impl CodeCompleteTask {
         should_stream: bool,
         is_multiple_preset_request: bool,
     ) -> ServiceFuture<ServiceResponse<CoreResponse>> {
+        let (session_id, session_tag) = match self.config.use_chat_threads {
+            true => (Some(self.session_id.clone()), Some(CODEGEN_TAG.to_string())),
+            false => (None, None),
+        };
         let request = GenerationRequest {
             parameters: Some(GenerationParameters {
                 prompt_parameters: Some(prompt_params),
@@ -180,7 +186,8 @@ impl CodeCompleteTask {
             }),
             preset_id: Some(preset.clone()),
             save_thread: self.config.use_chat_threads && !is_multiple_preset_request,
-            existing_thread_id: self.thread_id.lock().await.clone(),
+            session_id,
+            session_tag,
             ..Default::default()
         };
         let request = match should_stream {

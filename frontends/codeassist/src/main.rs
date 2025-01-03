@@ -12,11 +12,11 @@ use llmvm_protocol::{
     stdio::client::StdioClientConfig,
     ConfigExampleSnippet,
 };
-use llmvm_util::config::load_config;
 use llmvm_util::logging::setup_subscriber;
+use llmvm_util::{config::load_config, generate_client_id};
 use passthrough::LspStdioPassthrough;
 use serde::Deserialize;
-use session::SessionSubscription;
+use session::{SessionSubscription, CODEASSIST_CLIENT_PREFIX};
 use tokio::{
     io::{stdin, stdout},
     process::Command,
@@ -33,6 +33,7 @@ mod passthrough;
 mod service;
 mod session;
 mod tools;
+mod util;
 
 const CONFIG_FILENAME: &str = "codeassist.toml";
 const LOG_FILENAME: &str = "codeassist.log";
@@ -78,7 +79,7 @@ impl ConfigExampleSnippet for CodeAssistConfig {
 # use_chat_threads = true
 
 # Enable tools/function calling to allow edits from the chat app
-# enable_tools = true
+# enable_tools = false
 
 # Stdio core client configuration
 # [stdio_core]
@@ -103,7 +104,7 @@ impl Default for CodeAssistConfig {
             default_preset: DEFAULT_PRESET.to_string(),
             stream_snippets: false,
             use_chat_threads: true,
-            enable_tools: true,
+            enable_tools: false,
         }
     }
 }
@@ -154,12 +155,14 @@ async fn main() -> Result<()> {
     let enable_tools = config.enable_tools;
 
     let session_id = std::env::current_dir()?.to_string_lossy().into_owned();
+    let client_id = generate_client_id(CODEASSIST_CLIENT_PREFIX);
 
     let mut adapter = LspAdapter::new(
         Arc::new(config),
         passthrough_service.clone(),
         llmvm_core_service.clone(),
         session_id.clone(),
+        client_id.clone(),
     );
 
     passthrough.set_adapter_service(adapter.get_service());
@@ -167,8 +170,12 @@ async fn main() -> Result<()> {
     let adapter_handle = tokio::spawn(async move { adapter.run().await });
 
     if enable_tools {
-        let session_subscription =
-            SessionSubscription::new(llmvm_core_service, passthrough_service, session_id);
+        let session_subscription = SessionSubscription::new(
+            llmvm_core_service,
+            passthrough_service,
+            session_id,
+            client_id,
+        );
         tokio::spawn(async move {
             if let Err(e) = session_subscription.run().await {
                 error!("failed to subscribe to session, tools disabled: {e}");

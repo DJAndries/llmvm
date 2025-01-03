@@ -21,7 +21,7 @@ use tokio::{
 use tokio_stream::{wrappers::LinesStream, StreamExt};
 use tracing::{error, trace};
 
-use crate::{lsp::LspMessage, session::ALL_SESSION_TAGS};
+use crate::{lsp::LspMessage, session::ALL_SESSION_TAGS, util::to_relative_path_string};
 
 const UNKNOWN_LANG_ID: &str = "unknown";
 
@@ -41,17 +41,20 @@ pub struct ContentManager {
     content_map: HashMap<Url, DocumentInfo>,
     llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
     session_id: String,
+    client_id: String,
 }
 
 impl ContentManager {
     pub fn new(
         llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
         session_id: String,
+        client_id: String,
     ) -> Self {
         Self {
             content_map: HashMap::new(),
             llmvm_core_service,
             session_id,
+            client_id,
         }
     }
 
@@ -222,6 +225,8 @@ impl ContentManager {
             let uri_clone = uri.clone();
             let content_manager = content_manager_arc.clone();
 
+            // Start a task to debounce update on text change events
+            // Updates will be sent to core 5 seconds after the last edit
             tokio::spawn(async move {
                 let mut storage_pending = false;
                 loop {
@@ -269,7 +274,11 @@ impl ContentManager {
     }
 
     async fn set_file_context_session_parameter(&self, uri: &Url, enabled: bool) -> Result<()> {
-        let file_path = uri.path().to_string();
+        let file_path = to_relative_path_string(
+            &uri.to_file_path()
+                .map_err(|_| anyhow!("failed to get file path for file context"))?,
+        )?;
+
         let param_key = format!("codeassist_file_content.{}", file_path.replace(".", "_"));
         let parameter = match enabled {
             true => match self.content_map.get(uri) {
@@ -283,7 +292,6 @@ impl ContentManager {
                         .join("\n");
 
                     Some(SessionPromptParameter {
-                        persistent: true,
                         value: serde_json::to_value(FileContext {
                             content: content.clone(),
                             file_path: file_path.clone(),
@@ -304,6 +312,7 @@ impl ContentManager {
                         key: param_key.clone(),
                         session_id: self.session_id.clone(),
                         session_tag: tag.to_string(),
+                        client_id: self.client_id.clone(),
                         parameter: parameter.clone(),
                     },
                 ))

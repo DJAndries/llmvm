@@ -17,7 +17,6 @@ pub(super) const SESSION_INFO_FILENAME: &str = "info.json";
 #[derive(Serialize, Deserialize, Default)]
 pub(super) struct SessionInfo {
     pub thread_id: Option<String>,
-    pub prompt_parameters: HashMap<String, SessionPromptParameter>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -25,6 +24,7 @@ pub(super) struct SessionSubscriberInfo {
     #[serde(skip)]
     pub client_id: String,
     pub tools: Option<Vec<Tool>>,
+    pub prompt_parameters: HashMap<String, SessionPromptParameter>,
 }
 
 const MAX_SUB_AGE_SECS: u64 = 30;
@@ -96,7 +96,6 @@ pub(super) async fn start_new_thread_in_session(session_id: &str, tag: &str) -> 
         }
         false => SessionInfo {
             thread_id: Some(thread_id.clone()),
-            prompt_parameters: Default::default(),
         },
     };
 
@@ -109,15 +108,16 @@ pub(super) async fn start_new_thread_in_session(session_id: &str, tag: &str) -> 
 pub(super) async fn store_session_prompt_parameter(
     session_id: &str,
     tag: &str,
+    client_id: &str,
     param_name: String,
     param_info: Option<SessionPromptParameter>,
 ) -> Result<()> {
     let path = create_and_get_session_path(&session_id, &tag)
         .await?
-        .join(SESSION_INFO_FILENAME);
+        .join(format!("{}.json", client_id));
 
     let bytes = fs::read(&path).await?;
-    let mut info: SessionInfo = serde_json::from_slice(&bytes)?;
+    let mut info: SessionSubscriberInfo = serde_json::from_slice(&bytes)?;
 
     match param_info {
         Some(param_info) => info.prompt_parameters.insert(param_name, param_info),
@@ -129,57 +129,34 @@ pub(super) async fn store_session_prompt_parameter(
 }
 
 pub(super) async fn get_session_prompt_parameters(
-    session_id: &str,
-    tag: &str,
+    subscribers: &[SessionSubscriberInfo],
 ) -> Result<Map<String, Value>> {
-    let path = create_and_get_session_path(&session_id, &tag)
-        .await?
-        .join(SESSION_INFO_FILENAME);
-
-    let bytes = fs::read(&path).await?;
-    let info: SessionInfo = serde_json::from_slice(&bytes)?;
     let mut param_map = Map::new();
 
-    // Process each parameter
-    for (key, param) in info.prompt_parameters {
-        let parts: Vec<&str> = key.split('.').collect();
-        let mut current_map = &mut param_map;
+    for subscriber in subscribers {
+        // Process each parameter
+        for (key, param) in &subscriber.prompt_parameters {
+            let parts: Vec<&str> = key.split('.').collect();
+            let mut current_map = &mut param_map;
 
-        // Handle nested paths
-        for (i, part) in parts.iter().enumerate() {
-            if i == parts.len() - 1 {
-                // Last part - insert the actual value
-                current_map.insert(part.to_string(), param.value.clone());
-            } else {
-                // Create or get nested map
-                current_map = current_map
-                    .entry(part.to_string())
-                    .or_insert_with(|| Value::Object(Map::new()))
-                    .as_object_mut()
-                    .unwrap();
+            // Handle nested paths
+            for (i, part) in parts.iter().enumerate() {
+                if i == parts.len() - 1 {
+                    // Last part - insert the actual value
+                    current_map.insert(part.to_string(), param.value.clone());
+                } else {
+                    // Create or get nested map
+                    current_map = current_map
+                        .entry(part.to_string())
+                        .or_insert_with(|| Value::Object(Map::new()))
+                        .as_object_mut()
+                        .unwrap();
+                }
             }
         }
     }
 
     Ok(param_map)
-}
-
-pub(super) async fn clean_non_persistent_prompt_parameters(
-    session_id: &str,
-    tag: &str,
-) -> Result<()> {
-    let path = create_and_get_session_path(&session_id, &tag)
-        .await?
-        .join(SESSION_INFO_FILENAME);
-
-    let bytes = fs::read(&path).await?;
-    let mut info: SessionInfo = serde_json::from_slice(&bytes)?;
-
-    // Remove all non-persistent parameters
-    info.prompt_parameters.retain(|_, param| param.persistent);
-
-    fs::write(path, serde_json::to_vec(&info)?).await?;
-    Ok(())
 }
 
 pub(super) fn get_session_info_sync(session_id: &str, tag: &str) -> Result<SessionInfo> {

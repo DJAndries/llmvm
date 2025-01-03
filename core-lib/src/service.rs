@@ -161,6 +161,7 @@ impl Core for LLMVMCore {
         store_session_prompt_parameter(
             &request.session_id,
             &request.session_tag,
+            &request.client_id,
             request.key,
             request.parameter,
         )

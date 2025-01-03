@@ -48,9 +48,6 @@ impl CodeCompleteTask {
         let insert_in_place = self.config.prefer_insert_in_place && completed_snippets.len() == 1;
         let mut snippets_text = String::new();
         for completed_snippet in completed_snippets {
-            if let Some(thread_id) = completed_snippet.response.thread_id {
-                *self.thread_id.clone().lock().await = Some(thread_id);
-            }
             let snippet_text = completed_snippet
                 .response
                 .response
@@ -170,10 +167,6 @@ impl CodeCompleteTask {
             let real_position =
                 Position::new(start_position.line + total_line_offset, character_pos);
             let response = response.response?;
-
-            if let Some(thread_id) = response.thread_id {
-                *self.thread_id.lock().await = Some(thread_id);
-            }
 
             let text = response.response;
             let filtered_text = self.update_offset_and_filter_text(offset, &text);

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fs::canonicalize};
 
 use anyhow::{anyhow, bail, Result};
 use llmvm_protocol::{tower::Service, Tool, ToolCall, ToolType};
@@ -84,14 +84,15 @@ impl Tools {
             .as_object()
             .ok_or_else(|| anyhow!("tool arguments is not in object format"))?;
 
-        let file_uri = Url::from_file_path(
+        let file_uri = Url::from_file_path(canonicalize(
             arguments
                 .get(FILE_URI_ARG)
                 .ok_or_else(|| anyhow!("missing file uri argument"))?
                 .as_str()
                 .ok_or_else(|| anyhow!("failed to parse file uri argument"))?,
-        )
+        )?)
         .map_err(|_| anyhow!("failed to parse file path"))?;
+
         let content = arguments
             .get(CONTENT_ARG)
             .ok_or_else(|| anyhow!("missing content argument"))?
