@@ -188,12 +188,7 @@ pub(super) async fn get_thread_messages(
         };
         match thread_id {
             Some(thread_id) => thread_id,
-            None => {
-                // Create the thread file so future listen on thread calls will succeed
-                let new_thread_id = start_new_thread_in_session(session_id, tag).await?;
-                save_thread(&new_thread_id, Vec::new()).await?;
-                new_thread_id
-            }
+            None => start_new_thread_in_session(session_id, tag).await?,
         }
     } else {
         return Err(CoreError::ThreadNotFound);

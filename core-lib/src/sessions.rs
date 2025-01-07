@@ -1,18 +1,19 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use llmvm_protocol::{SessionPromptParameter, Tool};
 use llmvm_util::{get_file_path, DirType};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::fs;
+use tokio::fs::{self, DirEntry};
 
 use crate::error::CoreError;
 use crate::threads::{new_thread_id, save_thread};
 use crate::Result;
 
 pub(super) const SESSION_INFO_FILENAME: &str = "info.json";
+const SESSION_INFO_EXPIRY_SECS: u64 = 60 * 5;
 
 #[derive(Serialize, Deserialize, Default)]
 pub(super) struct SessionInfo {
@@ -45,6 +46,19 @@ fn session_path(id: &str, tag: &str) -> Result<PathBuf> {
     .ok_or(CoreError::UserHomeNotFound)
 }
 
+async fn is_subscriber_alive(dir_entry: &DirEntry, now: &SystemTime) -> Result<bool> {
+    let age = now
+        .duration_since(dir_entry.metadata().await?.modified()?)
+        .unwrap();
+    // Subscribers will actively update their last modified time periodically
+    // If the subscriber file has not been updated in a while, then ignore them and assume they're no longer active
+    let expired = age.as_secs() >= MAX_SUB_AGE_SECS;
+    if expired {
+        fs::remove_file(dir_entry.path()).await?;
+    }
+    Ok(!expired)
+}
+
 pub(super) async fn get_session_subscribers(
     session_id: &str,
     tag: &str,
@@ -63,13 +77,7 @@ pub(super) async fn get_session_subscribers(
         }
 
         if let Some(client_id) = filename.strip_suffix(".json") {
-            let age = now
-                .duration_since(entry.metadata().await?.modified()?)
-                .unwrap();
-            // Subscribers will actively update their last modified time periodically
-            // If the subscriber file has not been updated in a while, then ignore them and assume they're no longer active
-            if age.as_secs() >= MAX_SUB_AGE_SECS {
-                fs::remove_file(entry.path()).await?;
+            if !is_subscriber_alive(&entry, &now).await? {
                 continue;
             }
             let mut info =
@@ -169,12 +177,39 @@ pub(super) fn get_session_info_sync(session_id: &str, tag: &str) -> Result<Sessi
 }
 
 pub(super) async fn get_session_info(session_id: &str, tag: &str) -> Result<SessionInfo> {
-    let path = create_and_get_session_path(session_id, tag)
-        .await?
-        .join(SESSION_INFO_FILENAME);
-    let info: SessionInfo = match fs::try_exists(&path).await.unwrap_or_default() {
-        true => serde_json::from_slice(&fs::read(&path).await?)?,
-        false => Default::default(),
-    };
-    Ok(info)
+    let session_path = create_and_get_session_path(session_id, tag).await?;
+    let info_path = session_path.join(SESSION_INFO_FILENAME);
+
+    if !fs::try_exists(&info_path).await.unwrap_or_default() {
+        return Ok(Default::default());
+    }
+
+    let mut has_subscribers = false;
+    let mut dir = fs::read_dir(session_path).await?;
+    let now = SystemTime::now();
+    while let Some(entry) = dir.next_entry().await? {
+        if entry.path() != info_path && is_subscriber_alive(&entry, &now).await? {
+            has_subscribers = true;
+            break;
+        }
+    }
+
+    if !has_subscribers {
+        let metadata = fs::metadata(&info_path).await?;
+        let modified = metadata.modified()?;
+        let age = SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default();
+        if age > Duration::from_secs(SESSION_INFO_EXPIRY_SECS) {
+            return Ok(Default::default());
+        }
+    }
+
+    let info_path_clone = info_path.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let now = SystemTime::now();
+        let _ = std::fs::File::open(&info_path_clone).and_then(|f| f.set_modified(now));
+    })
+    .await;
+    Ok(serde_json::from_slice(&fs::read(&info_path).await?)?)
 }
