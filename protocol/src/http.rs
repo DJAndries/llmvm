@@ -25,6 +25,7 @@ const SESSIONS_PREFIX: &str = "/sessions/";
 const GET_ALL_THREAD_INFOS_METHOD: &str = "/threads";
 const LISTEN_THREAD_PATH: &str = "/listen_thread";
 const SESSION_PROMPT_PARAMETER_PATH: &str = "/session_prompt_parameter";
+const TOOL_CALL_RESULTS_PATH: &str = "/tool_call_results";
 
 fn percent_encode(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
@@ -65,6 +66,10 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
             SESSION_PROMPT_PARAMETER_PATH => {
                 validate_method(&request, Method::POST)?;
                 CoreRequest::StoreSessionPromptParameter(parse_request(request).await?)
+            }
+            TOOL_CALL_RESULTS_PATH => {
+                validate_method(&request, Method::POST)?;
+                CoreRequest::StoreToolCallResults(parse_request(request).await?)
             }
             _ => {
                 if path.starts_with(GET_THREAD_MESSAGES_METHOD_PREFIX)
@@ -167,6 +172,9 @@ impl RequestHttpConvert<CoreRequest> for CoreRequest {
                 Method::POST,
                 &request,
             )?,
+            CoreRequest::StoreToolCallResults(request) => {
+                serialize_to_http_request(base_url, TOOL_CALL_RESULTS_PATH, Method::POST, &request)?
+            }
             _ => return Ok(None),
         };
         Ok(Some(request))
@@ -204,6 +212,9 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                 ),
                 CoreRequest::StoreSessionPromptParameter(_) => {
                     ServiceResponse::Single(CoreResponse::StoreSessionPromptParameter)
+                }
+                CoreRequest::StoreToolCallResults(_) => {
+                    ServiceResponse::Single(CoreResponse::StoreToolCallResults)
                 }
                 _ => return Ok(None),
             },
@@ -246,6 +257,9 @@ impl ResponseHttpConvert<CoreRequest, CoreResponse> for CoreResponse {
                     ModalHttpResponse::Event(serde_json::to_value(response).unwrap())
                 }
                 CoreResponse::StoreSessionPromptParameter => ModalHttpResponse::Single(
+                    serialize_to_http_response(&Value::Null, StatusCode::OK)?,
+                ),
+                CoreResponse::StoreToolCallResults => ModalHttpResponse::Single(
                     serialize_to_http_response(&Value::Null, StatusCode::OK)?,
                 ),
                 _ => return Ok(None),

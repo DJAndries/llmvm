@@ -1,11 +1,16 @@
-use std::{collections::HashMap, fs::canonicalize};
+use std::{collections::HashMap, fs::canonicalize, sync::Arc};
 
 use anyhow::{anyhow, bail, Result};
-use llmvm_protocol::{tower::Service, Tool, ToolCall, ToolType};
+use llmvm_protocol::{
+    service::{CoreRequest, CoreResponse},
+    tower::Service,
+    BoxedService, StoreToolCallResultsRequest, Tool, ToolCall, ToolCallResult, ToolType,
+};
 use lsp_types::{
     request::ApplyWorkspaceEdit, ApplyWorkspaceEditParams, Position, Range, TextEdit, WorkspaceEdit,
 };
 use serde_json::json;
+use tokio::sync::Mutex;
 use tracing::error;
 use url::Url;
 
@@ -24,19 +29,35 @@ pub const INSERT_LINE_ARG: &str = "line";
 pub const CONTENT_ARG: &str = "content";
 
 pub struct Tools {
+    session_id: String,
     client_id: String,
+    llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
     passthrough_service: LspMessageService,
+    use_native_tools: bool,
 }
 
 impl Tools {
-    pub fn new(client_id: String, passthrough_service: LspMessageService) -> Self {
+    pub fn new(
+        session_id: String,
+        client_id: String,
+        llmvm_core_service: Arc<Mutex<BoxedService<CoreRequest, CoreResponse>>>,
+        passthrough_service: LspMessageService,
+        use_native_tools: bool,
+    ) -> Self {
         Self {
+            session_id,
             client_id,
+            llmvm_core_service,
             passthrough_service,
+            use_native_tools,
         }
     }
 
-    pub fn get_definitions() -> Vec<Tool> {
+    pub fn get_definitions(use_native_tools: bool) -> Vec<Tool> {
+        let tool_type = match use_native_tools {
+            true => ToolType::Native,
+            false => ToolType::Text,
+        };
         vec![
             Tool {
                 name: REPLACE_LINES_TOOL_NAME.to_string(),
@@ -51,7 +72,7 @@ impl Tools {
                     },
                     "required": [FILE_URI_ARG, START_LINE_ARG, END_LINE_ARG, CONTENT_ARG]
                 }),
-                tool_type: ToolType::Text,
+                tool_type: tool_type.clone(),
             },
             Tool {
                 name: INSERT_LINE_TOOL_NAME.to_string(),
@@ -66,7 +87,7 @@ impl Tools {
                     },
                     "required": [FILE_URI_ARG, INSERT_LINE_ARG, CONTENT_ARG]
                 }),
-                tool_type: ToolType::Text,
+                tool_type,
             },
         ]
     }
@@ -75,9 +96,9 @@ impl Tools {
         &mut self,
         edits: &mut HashMap<Url, Vec<TextEdit>>,
         tool_call: ToolCall,
-    ) -> Result<()> {
-        if tool_call.client_id != self.client_id {
-            return Ok(());
+    ) -> Result<Option<ToolCallResult>> {
+        if tool_call.client_id.unwrap_or_default() != self.client_id {
+            return Ok(None);
         }
         let arguments = tool_call
             .arguments
@@ -141,16 +162,35 @@ impl Tools {
             .entry(file_uri)
             .or_default()
             .push(TextEdit::new(range, content));
-        Ok(())
+        Ok(match self.use_native_tools {
+            true => Some(ToolCallResult {
+                id: tool_call.id.unwrap_or_default(),
+                result: None,
+                is_fatal_error: false,
+            }),
+            false => None,
+        })
     }
 
-    pub async fn process_tool_calls(&mut self, tool_calls: Vec<ToolCall>) {
+    pub async fn process_tool_calls(&mut self, tool_calls: Vec<ToolCall>, session_tag: &str) {
         let mut edits: HashMap<Url, Vec<TextEdit>> = HashMap::new();
 
+        let mut tool_call_results = match self.use_native_tools {
+            true => Some(Vec::new()),
+            false => None,
+        };
+
         for tool_call in tool_calls {
-            if let Err(e) = self.process_tool_call(&mut edits, tool_call).await {
-                // TODO(djandries): notify lsp client of failure
-                error!("Failed to process tool call: {e}");
+            match self.process_tool_call(&mut edits, tool_call).await {
+                Err(e) => {
+                    // TODO(djandries): notify lsp client of failure
+                    error!("Failed to process tool call: {e}");
+                }
+                Ok(tool_call_result) => {
+                    if let Some(tool_call_result) = tool_call_result {
+                        tool_call_results.as_mut().unwrap().push(tool_call_result);
+                    }
+                }
             }
         }
         if edits.is_empty() {
@@ -169,6 +209,25 @@ impl Tools {
             .await
         {
             error!("Failed to apply workspace edit from tool call: {e}")
+        }
+
+        if let Some(results) = tool_call_results {
+            if let Err(e) = self
+                .llmvm_core_service
+                .lock()
+                .await
+                .call(CoreRequest::StoreToolCallResults(
+                    StoreToolCallResultsRequest {
+                        session_id: self.session_id.clone(),
+                        session_tag: session_tag.to_string(),
+                        client_id: self.client_id.clone(),
+                        results,
+                    },
+                ))
+                .await
+            {
+                error!("failed to store tool call results: {e}");
+            }
         }
     }
 }

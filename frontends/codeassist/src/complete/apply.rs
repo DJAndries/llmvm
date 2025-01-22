@@ -51,6 +51,7 @@ impl CodeCompleteTask {
             let snippet_text = completed_snippet
                 .response
                 .response
+                .unwrap_or_default()
                 .split("\n")
                 .filter(|line| !line.starts_with(CODE_WRAP_MD_TOKEN))
                 .collect::<Vec<&str>>()
@@ -168,7 +169,7 @@ impl CodeCompleteTask {
                 Position::new(start_position.line + total_line_offset, character_pos);
             let response = response.response?;
 
-            let text = response.response;
+            let text = response.response.unwrap_or_default();
             let filtered_text = self.update_offset_and_filter_text(offset, &text);
             self.apply_edit(
                 Range::new(real_position.clone(), real_position.clone()),

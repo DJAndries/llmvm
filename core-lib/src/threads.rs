@@ -18,12 +18,14 @@ use tokio::{
     task::JoinHandle,
     time::sleep,
 };
+use tracing::debug;
 
 use crate::{
     error::CoreError,
     sessions::{
         create_and_get_session_path, get_session_info, get_session_info_sync,
-        start_new_thread_in_session, SessionSubscriberInfo, SESSION_INFO_FILENAME,
+        session_subscriber_path, start_new_thread_in_session, SessionSubscriberInfo,
+        SESSION_INFO_FILENAME,
     },
     Result,
 };
@@ -149,7 +151,7 @@ pub(super) async fn save_thread(thread_id: &str, messages: Vec<Message>) -> Resu
 pub(super) async fn maybe_save_thread_messages_and_get_thread_id(
     request: &GenerationRequest,
     new_text: String,
-    tool_calls: Vec<ToolCall>,
+    tool_calls: Option<Vec<ToolCall>>,
     messages: Option<Vec<Message>>,
     existing_thread_id: Option<String>,
 ) -> Result<Option<String>> {
@@ -158,8 +160,9 @@ pub(super) async fn maybe_save_thread_messages_and_get_thread_id(
             messages.push(Message {
                 client_id: request.client_id.clone(),
                 role: MessageRole::Assistant,
-                content: new_text,
-                tool_calls: Some(tool_calls),
+                content: Some(new_text),
+                tool_calls,
+                tool_call_results: None,
             });
             let thread_id = existing_thread_id.unwrap_or_else(new_thread_id);
             save_thread(&thread_id, messages).await?;
@@ -226,10 +229,15 @@ pub struct SubscriptionHandle {
     watcher: RecommendedWatcher,
     update_task: Option<JoinHandle<()>>,
     subscriber_path: Option<PathBuf>,
+    thread_id: String,
 }
 
 impl SubscriptionHandle {
-    pub fn new(watcher: RecommendedWatcher, subscriber_path: Option<PathBuf>) -> Result<Self> {
+    pub fn new(
+        watcher: RecommendedWatcher,
+        subscriber_path: Option<PathBuf>,
+        thread_id: String,
+    ) -> Result<Self> {
         let update_task = subscriber_path.clone().map(|path| {
             tokio::spawn(async move {
                 loop {
@@ -251,7 +259,18 @@ impl SubscriptionHandle {
             watcher,
             update_task,
             subscriber_path,
+            thread_id,
         })
+    }
+
+    pub fn update_thread_id(&mut self, thread_id: String) -> Result<()> {
+        self.watcher.unwatch(&thread_path(&self.thread_id)?)?;
+        self.watcher.watch(
+            &thread_path(&thread_id)?,
+            notify::RecursiveMode::NonRecursive,
+        )?;
+        self.thread_id = thread_id;
+        Ok(())
     }
 }
 
@@ -274,13 +293,16 @@ pub(super) async fn subscribe_to_thread(
     let (session_path, subscriber_file) = match (&request.session_id, &request.session_tag) {
         (Some(session_id), Some(session_tag)) => {
             let session_path = create_and_get_session_path(session_id, session_tag).await?;
+            let subscriber_file =
+                session_subscriber_path(session_id, &session_tag, &request.client_id).await?;
 
-            let subscriber_file = session_path.join(format!("{}.json", request.client_id));
             let subscriber_info = SessionSubscriberInfo {
                 client_id: Default::default(),
                 tools: request.tools.clone(),
                 prompt_parameters: Default::default(),
+                tool_call_results: Default::default(),
             };
+
             fs::write(&subscriber_file, serde_json::to_vec(&subscriber_info)?).await?;
 
             (Some(session_path), Some(subscriber_file))
@@ -288,11 +310,11 @@ pub(super) async fn subscribe_to_thread(
         _ => (None, None),
     };
 
-    let client_id = request.client_id;
+    let client_id = request.client_id.clone();
     let get_msgs_req = GetThreadMessagesRequest {
-        thread_id: request.thread_id,
-        session_id: request.session_id,
-        session_tag: request.session_tag,
+        thread_id: request.thread_id.clone(),
+        session_id: request.session_id.clone(),
+        session_tag: request.session_tag.clone(),
     };
 
     // Get initial messages and store their count
@@ -301,6 +323,7 @@ pub(super) async fn subscribe_to_thread(
 
     let thread_path = thread_path(&thread_id)?;
 
+    let thread_id_clone = thread_id.clone();
     // Create a watcher with async configuration
     let mut watcher = notify::recommended_watcher(
         move |res: std::result::Result<notify::Event, notify::Error>| {
@@ -320,6 +343,7 @@ pub(super) async fn subscribe_to_thread(
                                 if let Some(updated_thread_id) = info.thread_id {
                                     if updated_thread_id != thread_id {
                                         thread_id = updated_thread_id;
+                                        last_count = 0;
                                         let _ = tx.send(ThreadEvent::NewThread {
                                             thread_id: thread_id.clone(),
                                         });
@@ -334,7 +358,9 @@ pub(super) async fn subscribe_to_thread(
                                 // Send all new messages since last count
                                 for message in new_messages[last_count..].iter().cloned() {
                                     if let Some(msg_client_id) = &message.client_id {
-                                        if &client_id == msg_client_id {
+                                        if &client_id == msg_client_id
+                                            && message.tool_call_results.is_none()
+                                        {
                                             continue;
                                         }
                                     }
@@ -360,9 +386,12 @@ pub(super) async fn subscribe_to_thread(
     )?;
 
     watcher.watch(&thread_path, notify::RecursiveMode::NonRecursive)?;
-    if let Some(session_info_path) = session_path {
-        watcher.watch(&session_info_path, notify::RecursiveMode::NonRecursive)?;
+    if let Some(session_path) = session_path {
+        watcher.watch(&session_path, notify::RecursiveMode::NonRecursive)?;
     }
 
-    Ok((rx, SubscriptionHandle::new(watcher, subscriber_file)?))
+    Ok((
+        rx,
+        SubscriptionHandle::new(watcher, subscriber_file, thread_id_clone)?,
+    ))
 }

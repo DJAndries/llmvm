@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use llmvm_protocol::{SessionPromptParameter, Tool};
+use llmvm_protocol::{SessionPromptParameter, StoreToolCallResultsRequest, Tool, ToolCallResult};
 use llmvm_util::{get_file_path, DirType};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -26,6 +26,7 @@ pub(super) struct SessionSubscriberInfo {
     pub client_id: String,
     pub tools: Option<Vec<Tool>>,
     pub prompt_parameters: HashMap<String, SessionPromptParameter>,
+    pub tool_call_results: Vec<ToolCallResult>,
 }
 
 const MAX_SUB_AGE_SECS: u64 = 30;
@@ -36,7 +37,7 @@ pub(super) async fn create_and_get_session_path(id: &str, tag: &str) -> Result<P
     Ok(path)
 }
 
-fn session_path(id: &str, tag: &str) -> Result<PathBuf> {
+pub(super) fn session_path(id: &str, tag: &str) -> Result<PathBuf> {
     get_file_path(
         DirType::Sessions,
         &url::form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>(),
@@ -113,6 +114,16 @@ pub(super) async fn start_new_thread_in_session(session_id: &str, tag: &str) -> 
     Ok(thread_id)
 }
 
+pub(super) async fn session_subscriber_path(
+    session_id: &str,
+    session_tag: &str,
+    client_id: &str,
+) -> Result<PathBuf> {
+    Ok(create_and_get_session_path(&session_id, &session_tag)
+        .await?
+        .join(format!("{}.json", client_id)))
+}
+
 pub(super) async fn store_session_prompt_parameter(
     session_id: &str,
     tag: &str,
@@ -120,9 +131,7 @@ pub(super) async fn store_session_prompt_parameter(
     param_name: String,
     param_info: Option<SessionPromptParameter>,
 ) -> Result<()> {
-    let path = create_and_get_session_path(&session_id, &tag)
-        .await?
-        .join(format!("{}.json", client_id));
+    let path = session_subscriber_path(session_id, tag, client_id).await?;
 
     let bytes = fs::read(&path).await?;
     let mut info: SessionSubscriberInfo = serde_json::from_slice(&bytes)?;
@@ -131,6 +140,23 @@ pub(super) async fn store_session_prompt_parameter(
         Some(param_info) => info.prompt_parameters.insert(param_name, param_info),
         None => info.prompt_parameters.remove(&param_name),
     };
+
+    fs::write(path, serde_json::to_vec(&info)?).await?;
+    Ok(())
+}
+
+pub(super) async fn store_tool_call_results(request: StoreToolCallResultsRequest) -> Result<()> {
+    let path = session_subscriber_path(
+        &request.session_id,
+        &request.session_tag,
+        &request.client_id,
+    )
+    .await?;
+
+    let bytes = fs::read(&path).await?;
+    let mut info: SessionSubscriberInfo = serde_json::from_slice(&bytes)?;
+
+    info.tool_call_results = request.results;
 
     fs::write(path, serde_json::to_vec(&info)?).await?;
     Ok(())

@@ -50,6 +50,8 @@ pub enum OutsourceError {
     ModelDescriptionParse,
     #[error("model parameters should be object")]
     ModelParamsNotObject,
+    #[error("invalid tool call")]
+    InvalidToolCall,
 }
 
 #[derive(Display, EnumString)]
@@ -79,6 +81,7 @@ impl Into<ProtocolError> for OutsourceError {
             OutsourceError::NoTextInResponse => ProtocolErrorType::Internal,
             OutsourceError::ModelDescriptionParse => ProtocolErrorType::BadRequest,
             OutsourceError::ModelParamsNotObject => ProtocolErrorType::BadRequest,
+            OutsourceError::InvalidToolCall => ProtocolErrorType::Internal,
         };
         ProtocolError {
             error_type,

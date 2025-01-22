@@ -33,7 +33,7 @@ impl Into<BackendGenerationRequest> for GenerateModelArgs {
     fn into(self) -> BackendGenerationRequest {
         BackendGenerationRequest {
             model: self.model,
-            prompt: self.prompt,
+            prompt: Some(self.prompt),
             max_tokens: self.max_tokens,
             ..Default::default()
         }
@@ -57,18 +57,10 @@ pub async fn run_backend<B: Backend + 'static>(
     match command {
         Some(command) => match command {
             BackendCommand::Generate(args) => {
-                let result = backend
-                    .generate(BackendGenerationRequest {
-                        model: args.model,
-                        prompt: args.prompt,
-                        max_tokens: args.max_tokens,
-                        thread_messages: None,
-                        model_parameters: None,
-                    })
-                    .await;
+                let result = backend.generate(args.into()).await;
                 match result {
                     Ok(response) => {
-                        println!("{}", response.response);
+                        println!("{}", response.response.unwrap_or_default());
                     }
                     Err(e) => {
                         error!("Failed to process request: {}", e);

@@ -1,5 +1,5 @@
 use std::io::{stdout, Write};
-use std::{process::exit, sync::Arc};
+use std::process::exit;
 
 use clap::{arg, command, Args, Parser, Subcommand};
 use futures::stream::StreamExt;
@@ -116,13 +116,13 @@ async fn main() -> std::io::Result<()> {
         },
     );
 
-    let core = Arc::new(match LLMVMCore::new(config.lib_config).await {
+    let core = match LLMVMCore::new(config.lib_config).await {
         Ok(core) => core,
         Err(e) => {
             eprintln!("failed to init core: {}", e);
             exit(1);
         }
-    });
+    };
 
     match cli.command {
         CoreCommand::Generate(args) => {
@@ -145,7 +145,7 @@ async fn main() -> std::io::Result<()> {
                         exit(1);
                     }
                     Ok(response) => {
-                        println!("{}", response.response);
+                        println!("{}", response.response.unwrap_or_default());
                         if let Some(id) = response.thread_id {
                             eprintln!("Thread ID is {}", id);
                         }
@@ -165,7 +165,7 @@ async fn main() -> std::io::Result<()> {
                                     exit(1);
                                 }
                                 Ok(response) => {
-                                    print!("{}", response.response);
+                                    print!("{}", response.response.unwrap_or_default());
                                     stdout().flush().ok();
                                     if let Some(id) = response.thread_id {
                                         eprintln!("\nThread ID is {}", id);

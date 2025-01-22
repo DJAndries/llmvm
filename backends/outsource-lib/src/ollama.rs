@@ -21,7 +21,7 @@ const TEMPLATE: &str = "{{ .Prompt }}";
 #[derive(Serialize)]
 struct ModelRequest {
     model: String,
-    prompt: String,
+    prompt: Option<String>,
     template: String,
     stream: bool,
     options: Option<Map<String, Value>>,
@@ -72,7 +72,9 @@ pub async fn generate(
     let response: ModelResponse = response.json().await?;
 
     Ok(BackendGenerationResponse {
-        response: response.response,
+        response: Some(response.response),
+        tool_call_part: None,
+        tool_calls: None,
     })
 }
 
@@ -111,6 +113,8 @@ pub async fn generate_stream(
 fn extract_response_from_stream_event(line_json: &[u8]) -> Result<BackendGenerationResponse> {
     let reponse: ModelResponse = serde_json::from_slice(line_json)?;
     Ok(BackendGenerationResponse {
-        response: reponse.response,
+        response: Some(reponse.response),
+        tool_call_part: None,
+        tool_calls: None,
     })
 }

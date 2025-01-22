@@ -12,9 +12,9 @@ use llmvm_protocol::{
     http::client::HttpClientConfig,
     service::{util::build_core_service_from_config, BoxedService, CoreRequest, CoreResponse},
     stdio::client::StdioClientConfig,
-    ConfigExampleSnippet, GenerationParameters, GenerationRequest, GetThreadMessagesRequest,
-    Message, MessageRole, NewThreadInSessionRequest, ServiceResponse, SubscribeToThreadRequest,
-    ThreadEvent,
+    ConfigExampleSnippet, GenerationParameters, GenerationRequest, GenerationResponse,
+    GetThreadMessagesRequest, Message, MessageRole, NewThreadInSessionRequest, ServiceResponse,
+    SubscribeToThreadRequest, ThreadEvent,
 };
 use llmvm_util::{config::load_config, generate_client_id};
 use rustyline::{error::ReadlineError, Config as RlConfig, DefaultEditor as RlEditor, EditMode};
@@ -101,6 +101,7 @@ struct ChatApp {
     stdout: Stdout,
     listener_active: bool,
     in_console: Arc<Mutex<bool>>,
+    in_tool_call_stream: bool,
 }
 
 fn get_output_prefix(
@@ -170,6 +171,7 @@ impl ChatApp {
             client_id: generate_client_id("chat"),
             listener_active: false,
             in_console: Default::default(),
+            in_tool_call_stream: false,
         };
         if new.cli.tag.is_none() {
             new.thread_id = if new.cli.load_last_chat {
@@ -189,7 +191,7 @@ impl ChatApp {
                     message.client_id.as_ref(),
                     self.in_console.as_ref(),
                 );
-                println!("{}{}", prefix, message.content);
+                println!("{}{}", prefix, message.content.unwrap_or_default());
             }
         }
         Ok(())
@@ -267,7 +269,11 @@ impl ChatApp {
                                             message.client_id.as_ref(),
                                             &Mutex::new(false),
                                         );
-                                        println!("\r{}{}", prefix, message.content,);
+                                        println!(
+                                            "\r{}{}",
+                                            prefix,
+                                            message.content.unwrap_or_default()
+                                        );
                                     }
                                     ThreadEvent::NewThread { thread_id } => {
                                         println!("\r\nNew thread started in group: {thread_id}\n");
@@ -318,6 +324,27 @@ impl ChatApp {
             _ => (),
         }
         Ok(())
+    }
+
+    fn handle_streaming_tool_calls(&mut self, response: &GenerationResponse) {
+        match &response.tool_call_part {
+            Some(part) => {
+                if !self.in_tool_call_stream {
+                    self.in_tool_call_stream = true;
+                    print!("\nTool call: ");
+                }
+                print!("{}", part);
+                if part.ends_with("\n") {
+                    self.in_tool_call_stream = false;
+                }
+            }
+            None => {
+                if self.in_tool_call_stream {
+                    println!();
+                    self.in_tool_call_stream = false;
+                }
+            }
+        };
     }
 
     async fn handle_input(&mut self, line: String) -> Result<bool> {
@@ -380,11 +407,14 @@ impl ChatApp {
                                 }
                                 Ok(response) => match response {
                                     CoreResponse::GenerationStream(response) => {
-                                        if let Some(id) = response.thread_id {
-                                            self.thread_id = Some(id);
+                                        if let Some(id) = &response.thread_id {
+                                            self.thread_id = Some(id.clone());
                                             self.maybe_start_listening_on_thread().await?;
                                         }
-                                        print!("{}", response.response);
+                                        self.handle_streaming_tool_calls(&response);
+                                        if let Some(text) = response.response {
+                                            print!("{}", text);
+                                        }
                                         self.stdout.flush().unwrap();
                                     }
                                     _ => (),

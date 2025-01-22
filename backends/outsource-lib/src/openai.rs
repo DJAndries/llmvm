@@ -3,7 +3,8 @@ use std::collections::VecDeque;
 use async_stream::stream;
 use futures::StreamExt;
 use llmvm_protocol::{
-    BackendGenerationRequest, BackendGenerationResponse, Message, MessageRole, ModelDescription,
+    BackendGenerationRequest, BackendGenerationResponse, BackendMessage, MessageRole,
+    ModelDescription,
 };
 use llmvm_protocol::{NotificationStream, ServiceError};
 use reqwest::{Client, Response as HttpResponse, Url};
@@ -89,11 +90,11 @@ async fn send_generate_request(
     body.insert(MAX_TOKENS_KEY.to_string(), request.max_tokens.into());
     if is_chat_model {
         let mut messages: Vec<_> = request.thread_messages.take().unwrap_or_default();
-        messages.push(Message {
+        messages.push(BackendMessage {
             role: MessageRole::User,
             content: request.prompt,
-            client_id: None,
             tool_calls: None,
+            tool_call_results: None,
         });
         body.insert(MESSAGES_KEY.to_string(), serde_json::to_value(messages)?);
     } else {
@@ -145,7 +146,11 @@ pub async fn generate(
     }
     .unwrap_or_default();
 
-    Ok(BackendGenerationResponse { response })
+    Ok(BackendGenerationResponse {
+        response: Some(response),
+        tool_call_part: None,
+        tool_calls: None,
+    })
 }
 
 fn extract_response_from_stream_event(
@@ -168,7 +173,11 @@ fn extract_response_from_stream_event(
         choice.text
     }
     .unwrap_or_default();
-    Ok(BackendGenerationResponse { response })
+    Ok(BackendGenerationResponse {
+        response: Some(response),
+        tool_call_part: None,
+        tool_calls: None,
+    })
 }
 
 /// Request text generation and return an asynchronous stream of generated tokens,

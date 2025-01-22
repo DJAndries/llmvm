@@ -18,6 +18,7 @@ const GET_THREAD_MESSAGES_METHOD: &str = "get_thread_messages";
 const LISTEN_ON_THREAD_METHOD: &str = "listen_on_thread";
 const NEW_THREAD_IN_SESSION_METHOD: &str = "new_thread_in_session";
 const STORE_SESSION_PROMPT_PARAMETER_METHOD: &str = "store_session_prompt_parameter";
+const STORE_TOOL_CALL_RESULTS_METHOD: &str = "store_tool_call_results";
 
 impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
     fn from_jsonrpc_request(value: JsonRpcRequest) -> Result<Option<Self>, ProtocolError> {
@@ -32,6 +33,9 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
             NEW_THREAD_IN_SESSION_METHOD => CoreRequest::NewThreadInSession(value.parse_params()?),
             STORE_SESSION_PROMPT_PARAMETER_METHOD => {
                 CoreRequest::StoreSessionPromptParameter(value.parse_params()?)
+            }
+            STORE_TOOL_CALL_RESULTS_METHOD => {
+                CoreRequest::StoreToolCallResults(value.parse_params()?)
             }
             _ => return Ok(None),
         }))
@@ -66,6 +70,10 @@ impl RequestJsonRpcConvert<CoreRequest> for CoreRequest {
                 STORE_SESSION_PROMPT_PARAMETER_METHOD,
                 Some(serde_json::to_value(request).unwrap()),
             ),
+            CoreRequest::StoreToolCallResults(request) => (
+                STORE_TOOL_CALL_RESULTS_METHOD,
+                Some(serde_json::to_value(request).unwrap()),
+            ),
         };
         JsonRpcRequest::new(method.to_string(), params)
     }
@@ -97,6 +105,7 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
                     CoreRequest::StoreSessionPromptParameter(_) => {
                         Self::StoreSessionPromptParameter
                     }
+                    CoreRequest::StoreToolCallResults(_) => Self::StoreToolCallResults,
                     _ => return Ok(None),
                 }))
             }
@@ -134,6 +143,7 @@ impl ResponseJsonRpcConvert<CoreRequest, CoreResponse> for CoreResponse {
             }
             CoreResponse::NewThreadInSession(response) => serde_json::to_value(response).unwrap(),
             CoreResponse::StoreSessionPromptParameter => Value::Null,
+            CoreResponse::StoreToolCallResults => Value::Null,
         });
         match is_notification {
             true => JsonRpcNotification::new_with_result_params(result, id.to_string()).into(),

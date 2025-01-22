@@ -24,6 +24,7 @@ use serde::Deserialize;
 use threads::clean_old_threads;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -76,7 +77,7 @@ pub struct LLMVMCore {
 }
 
 impl LLMVMCore {
-    pub async fn new(mut config: LLMVMCoreConfig) -> Result<Self> {
+    pub async fn new(mut config: LLMVMCoreConfig) -> Result<Arc<Self>> {
         clean_old_threads(config.thread_ttl_secs.unwrap_or(DEFAULT_THREAD_TTL_SECS)).await?;
 
         let mut clients: HashMap<String, BoxedService<BackendRequest, BackendResponse>> =
@@ -90,10 +91,10 @@ impl LLMVMCore {
             );
         }
 
-        Ok(Self {
+        Ok(Arc::new(Self {
             clients: Mutex::new(clients),
             config,
-        })
+        }))
     }
 
     async fn get_client<'a>(

@@ -19,3 +19,4 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 strum = "0.24"
 strum_macros = "0.24"
+tracing = { workspace = true }

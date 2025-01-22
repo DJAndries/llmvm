@@ -15,7 +15,7 @@ const RETURN_FULL_KEY: &str = "return_full_text";
 
 #[derive(Serialize)]
 struct ModelRequest {
-    inputs: String,
+    inputs: Option<String>,
     parameters: Map<String, Value>,
 }
 
@@ -68,6 +68,8 @@ pub async fn generate(
     let mut response: Vec<ModelResponse> = response.json().await?;
 
     Ok(BackendGenerationResponse {
-        response: response.pop().unwrap().generated_text,
+        response: Some(response.pop().unwrap().generated_text),
+        tool_call_part: None,
+        tool_calls: None,
     })
 }

@@ -54,6 +54,7 @@ pub struct CodeAssistConfig {
     use_chat_threads: bool,
 
     enable_tools: bool,
+    use_native_tools: bool,
 }
 
 impl ConfigExampleSnippet for CodeAssistConfig {
@@ -81,6 +82,10 @@ impl ConfigExampleSnippet for CodeAssistConfig {
 # Enable tools/function calling to allow edits from the chat app
 # enable_tools = false
 
+# If tools are enabled, use native function calling instead of using results
+# in text response (not recommended)
+# use_native_tools = false
+
 # Stdio core client configuration
 # [stdio_core]
 {}
@@ -105,6 +110,7 @@ impl Default for CodeAssistConfig {
             stream_snippets: false,
             use_chat_threads: true,
             enable_tools: false,
+            use_native_tools: false,
         }
     }
 }
@@ -153,6 +159,7 @@ async fn main() -> Result<()> {
     let passthrough_service = passthrough.get_service();
 
     let enable_tools = config.enable_tools;
+    let use_native_tools = config.use_native_tools;
 
     let session_id = std::env::current_dir()?.to_string_lossy().into_owned();
     let client_id = generate_client_id(CODEASSIST_CLIENT_PREFIX);
@@ -175,6 +182,7 @@ async fn main() -> Result<()> {
             passthrough_service,
             session_id,
             client_id,
+            use_native_tools,
         );
         tokio::spawn(async move {
             if let Err(e) = session_subscription.run().await {
